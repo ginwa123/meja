@@ -18,6 +18,7 @@ const draw = @import("main.zig");
 const editor = @import("editor.zig");
 const value = @import("meja").value;
 const theme = @import("theme.zig");
+const glin_input = ui.components.input;
 
 const testing = std.testing;
 
@@ -36,7 +37,7 @@ const Harness = struct {
 
         const app = try gpa.create(App);
         errdefer gpa.destroy(app);
-        app.* = App.init(gpa, threaded.io());
+        app.init(gpa, threaded.io());
         app.open(":memory:");
         try testing.expect(app.db_open);
 
@@ -315,4 +316,97 @@ test "the rendered status reports the row and column counts" {
     h.frame();
 
     try h.driver.expectText("3 rows x 1 cols");
+}
+
+test "the editor buffer survives stack churn between keystrokes" {
+    // Regression test. `App.init` used to RETURN an App by value, so
+    // `ed.buf` pointed into the local it was copied from -- dead memory
+    // the moment the function returned. Typing then wrote into freed
+    // stack.
+    //
+    // The earlier E2E tests missed it because nothing between init and
+    // the first keystroke disturbed that stack, so the bytes happened to
+    // still be intact. The way to catch this class of bug is to clobber
+    // the stack deliberately between keystrokes, which is what this does.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    try h.typeText("SELECT");
+
+    // Churn the stack hard: deep calls with their own large locals.
+    var scratch: [64 * 1024]u8 = undefined;
+    for (0..40) |k| {
+        @memset(&scratch, @truncate(k));
+        h.frame();
+        if (h.app.ed.len == 0) return error.EditorBufferLost;
+    }
+
+    try h.typeText(" * FROM users");
+    try testing.expectEqualStrings("SELECT * FROM users", h.app.ed.text());
+}
+
+test "the editor buffer is not a pointer into a dead App copy" {
+    // A direct check of the invariant rather than its consequence: the
+    // buffer the editor writes to must be the one inside the App the
+    // caller holds.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    const buf_start = @intFromPtr(h.app.ed.buf.ptr);
+    const field_start = @intFromPtr(&h.app.sql_buf);
+    try testing.expectEqual(field_start, buf_start);
+    try testing.expectEqual(@as(usize, h.app.sql_buf.len), h.app.ed.buf.len);
+}
+
+test "the real Host key path types a query correctly" {
+    // Driving `App.onKey` directly is NOT enough: shift is latched by
+    // `Mods.track` inside the dispatch chain, so a test that passes a
+    // fresh `Mods{}` per keystroke never exercises the latch and would
+    // pass on a keyboard that types every letter in lower case.
+    //
+    // This goes through `Host.onKeyEvent` -- the exact entry point the
+    // window backend calls -- so the whole path is covered: latch, then
+    // dispatch, then the app's handler.
+    const gpa = std.heap.page_allocator;
+
+    var threaded: std.Io.Threaded = .init(gpa, .{});
+    defer threaded.deinit();
+
+    const app = try gpa.create(App);
+    defer gpa.destroy(app);
+    app.init(gpa, threaded.io());
+    app.open(":memory:");
+    try seed(app);
+
+    var host = try ui.host.Host.init(gpa, app, draw.App_root);
+    defer host.deinit();
+    // The same registration `main` does.
+    host.keys.register(struct {
+        fn f(ctx: ?*anyopaque, mods: glin_input.Mods, keycode: u32) bool {
+            const a: *App = @ptrCast(@alignCast(ctx.?));
+            return a.onKey(mods, keycode);
+        }
+    }.f, app);
+
+    const query_text = "SELECT * FROM users";
+    for (query_text) |ch| {
+        const stroke = editor.keyCodeFor(ch) orelse return error.UnsupportedCharacter;
+        // `Mods.track` consumes the modifier and returns false, so the
+        // shift press is not reported as handled. The latch is the point.
+        if (stroke.shift) _ = host.onKeyEvent(editor.KEY_LEFTSHIFT, true);
+        _ = host.onKeyEvent(stroke.code, true);
+        if (stroke.shift) _ = host.onKeyEvent(editor.KEY_LEFTSHIFT, false);
+    }
+
+    try testing.expectEqualStrings(query_text, app.ed.text());
+
+    // And it actually runs -- through the same real path, with Control
+    // latched rather than passed in by hand.
+    _ = host.onKeyEvent(editor.KEY_LEFTCTRL, true);
+    _ = host.onKeyEvent(editor.KEY_ENTER, true);
+    _ = host.onKeyEvent(editor.KEY_LEFTCTRL, false);
+    try testing.expect(app.has_result);
+    try testing.expectEqual(@as(usize, 3), app.result.rowCount());
 }

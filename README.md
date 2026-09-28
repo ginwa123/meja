@@ -81,7 +81,7 @@ Both dependencies are local path deps, relative in `build.zig.zon`
 
 ```sh
 zig build                    # both binaries
-zig build test               # 190 tests
+zig build test               # 193 tests
 zig build test -Dgui=false   # CLI only, no Wayland toolchain needed
 zig build test-gui           # GUI tests only (headless, no display)
 zig build run -- app.db      # run the CLI
@@ -150,7 +150,7 @@ from the primitives, in `src/gui/`:
   than exact colours, so the palette can be retuned without rewriting
   tests.
 
-The GUI's 71 tests run headless — glinlandui's test build selects a
+The GUI's 74 tests run headless — glinlandui's test build selects a
 portable backend, and the Driver renders real frames, so widget wiring
 is verified with no display server on any platform.
 

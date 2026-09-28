@@ -104,13 +104,22 @@ pub const App = struct {
         return self.text_arena[start..self.text_used];
     }
 
-    pub fn init(gpa: Allocator, io: Io) App {
-        var self = App{ .gpa = gpa, .io = io };
-        // The editor MUST be bound to `sql_buf`. `Editor.init(undefined)`
-        // would give a zero-length slice, and the first keystroke would
-        // then write past the end of it.
+    /// Initialise IN PLACE.
+    ///
+    /// This deliberately does not return an `App` by value. The editor
+    /// holds a slice of `sql_buf`, a field of this very struct, so
+    /// returning a copy would leave `ed.buf` pointing into the local
+    /// that was copied FROM -- dead memory the moment the function
+    /// returned. The first keystroke would then write into freed stack,
+    /// which is exactly the crash this signature exists to prevent.
+    ///
+    /// `App.init(allocator, io)` looked correct and compiled; nothing
+    /// about the type system flagged it.
+    pub fn init(self: *App, gpa: Allocator, io: Io) void {
+        self.* = .{ .gpa = gpa, .io = io };
+        // Bound to `sql_buf` AFTER the struct is in its final place, so
+        // the pointer refers to the App the caller actually holds.
         self.ed = editor.Editor.init(&self.sql_buf);
-        return self;
     }
 
     /// Open a database and load the schema. Safe to call twice.

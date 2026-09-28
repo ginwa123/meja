@@ -466,7 +466,8 @@ pub fn main(init: std.process.Init) !void {
     var threaded: Io.Threaded = .init(gpa, .{});
     defer threaded.deinit();
 
-    var app = App.init(gpa, threaded.io());
+    var app: App = undefined;
+    app.init(gpa, threaded.io());
     defer {
         app.clearResult();
         app.freeTables();

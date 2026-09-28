@@ -391,6 +391,8 @@ pub fn handleKey(
 pub const KEY_BACKSPACE: u32 = 14;
 pub const KEY_ENTER: u32 = 28;
 pub const KEY_A: u32 = 30;
+pub const KEY_LEFTSHIFT: u32 = 42;
+pub const KEY_LEFTCTRL: u32 = 29;
 pub const KEY_LEFT: u32 = 105;
 pub const KEY_RIGHT: u32 = 106;
 pub const KEY_UP: u32 = 103;
