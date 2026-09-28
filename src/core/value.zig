@@ -235,7 +235,7 @@ pub fn isValidUtf8(value: Value) bool {
 
 const testing = std.testing;
 
-fn render(value: Value, buf: []u8) ![]const u8 {
+fn renderTo(value: Value, buf: []u8) ![]const u8 {
     var w: std.Io.Writer = .fixed(buf);
     try value.format(&w);
     return w.buffered();
@@ -268,16 +268,16 @@ test "NULL and the empty string are distinguishable once typeof() is known" {
     try testing.expect(from_null.isNull());
     try testing.expect(!from_empty.isNull());
     // Display form: NULL is labelled, the empty string is blank.
-    try testing.expectEqualStrings("NULL", try render(from_null, &nbuf));
-    try testing.expectEqualStrings("", try render(from_empty, &nbuf));
+    try testing.expectEqualStrings("NULL", try renderTo(from_null, &nbuf));
+    try testing.expectEqualStrings("", try renderTo(from_empty, &nbuf));
     // SQL-literal form: NULL contributes nothing, so a generated
     // `WHERE col = ''` can never be confused with `WHERE col IS NULL`.
     try testing.expectEqualStrings("", try renderText(from_null, &tbuf));
     try testing.expectEqualStrings("", try renderText(from_empty, &tbuf));
 
     var buf: [32]u8 = undefined;
-    try testing.expectEqualStrings("NULL", try render(from_null, &buf));
-    try testing.expectEqualStrings("", try render(from_empty, &buf));
+    try testing.expectEqualStrings("NULL", try renderTo(from_null, &buf));
+    try testing.expectEqualStrings("", try renderTo(from_empty, &buf));
 }
 
 test "the integer/text ambiguity is resolved by typeof()" {
@@ -286,10 +286,10 @@ test "the integer/text ambiguity is resolved by typeof()" {
     var ibuf: [32]u8 = undefined;
 
     try testing.expectEqual(@as(i64, 42), as_int.asInt().?);
-    try testing.expectEqualStrings("42", try render(as_text, &ibuf));
+    try testing.expectEqualStrings("42", try renderTo(as_text, &ibuf));
     // Same bytes, different type — the point of the whole module.
-    try testing.expectEqualStrings("42", try render(as_int, &ibuf));
-    try testing.expectEqualStrings("42", try render(as_text, &ibuf));
+    try testing.expectEqualStrings("42", try renderTo(as_int, &ibuf));
+    try testing.expectEqualStrings("42", try renderTo(as_text, &ibuf));
     try testing.expect(std.meta.activeTag(as_int) != std.meta.activeTag(as_text));
 }
 
@@ -306,7 +306,7 @@ test "a malformed numeric payload degrades to text instead of vanishing" {
     // raw bytes beats showing nothing.
     const v = Value.fromStorageClass("integer", "not-a-number");
     var mbuf: [32]u8 = undefined;
-    try testing.expectEqualStrings("not-a-number", try render(v, &mbuf));
+    try testing.expectEqualStrings("not-a-number", try renderTo(v, &mbuf));
 }
 
 test "fromUntypedText cannot claim NULL" {
@@ -318,31 +318,31 @@ test "fromUntypedText cannot claim NULL" {
 
 test "format renders each class" {
     var buf: [64]u8 = undefined;
-    try testing.expectEqualStrings("NULL", try render(.null_value, &buf));
-    try testing.expectEqualStrings("42", try render(.{ .integer = 42 }, &buf));
-    try testing.expectEqualStrings("-7", try render(.{ .integer = -7 }, &buf));
-    try testing.expectEqualStrings("hello", try render(.{ .text = "hello" }, &buf));
-    try testing.expectEqualStrings("<blob 4 bytes>", try render(.{ .blob = "abcd" }, &buf));
-    try testing.expectEqualStrings("~weird", try render(.{ .unknown = "weird" }, &buf));
+    try testing.expectEqualStrings("NULL", try renderTo(.null_value, &buf));
+    try testing.expectEqualStrings("42", try renderTo(.{ .integer = 42 }, &buf));
+    try testing.expectEqualStrings("-7", try renderTo(.{ .integer = -7 }, &buf));
+    try testing.expectEqualStrings("hello", try renderTo(.{ .text = "hello" }, &buf));
+    try testing.expectEqualStrings("<blob 4 bytes>", try renderTo(.{ .blob = "abcd" }, &buf));
+    try testing.expectEqualStrings("~weird", try renderTo(.{ .unknown = "weird" }, &buf));
 }
 
 test "a real renders with a decimal point, unlike an integer" {
     var buf: [64]u8 = undefined;
     // The point of the distinction: 1 (INTEGER) and 1.5 (REAL) must not
     // render identically, or a grid hides the column's storage class.
-    try testing.expectEqualStrings("1", try render(.{ .integer = 1 }, &buf));
-    try testing.expectEqualStrings("1.5", try render(.{ .real = 1.5 }, &buf));
+    try testing.expectEqualStrings("1", try renderTo(.{ .integer = 1 }, &buf));
+    try testing.expectEqualStrings("1.5", try renderTo(.{ .real = 1.5 }, &buf));
     // A whole-valued REAL still prints as a float literal.
     try testing.expectEqualStrings("1", try renderText(.{ .real = 1.0 }, &buf));
 }
 
 test "control characters are escaped so a value cannot break the layout" {
     var buf: [128]u8 = undefined;
-    try testing.expectEqualStrings("a\\nb", try render(.{ .text = "a\nb" }, &buf));
-    try testing.expectEqualStrings("a\\tb", try render(.{ .text = "a\tb" }, &buf));
-    try testing.expectEqualStrings("a\\\\b", try render(.{ .text = "a\\b" }, &buf));
-    try testing.expectEqualStrings("\\e[31m", try render(.{ .text = "\x1b[31m" }, &buf));
-    try testing.expectEqualStrings("\\x00", try render(.{ .text = "\x00" }, &buf));
+    try testing.expectEqualStrings("a\\nb", try renderTo(.{ .text = "a\nb" }, &buf));
+    try testing.expectEqualStrings("a\\tb", try renderTo(.{ .text = "a\tb" }, &buf));
+    try testing.expectEqualStrings("a\\\\b", try renderTo(.{ .text = "a\\b" }, &buf));
+    try testing.expectEqualStrings("\\e[31m", try renderTo(.{ .text = "\x1b[31m" }, &buf));
+    try testing.expectEqualStrings("\\x00", try renderTo(.{ .text = "\x00" }, &buf));
 }
 
 test "asInt coerces a real, and refuses text" {
@@ -366,7 +366,7 @@ test "formatWidth agrees with format" {
         .{ .text = "hello" },
         .{ .blob = "xy" },
     }) |v| {
-        try testing.expectEqual((try render(v, &buf)).len, v.formatWidth());
+        try testing.expectEqual((try renderTo(v, &buf)).len, v.formatWidth());
     }
 }
 
@@ -375,4 +375,57 @@ test "isValidUtf8 catches binary masquerading as text" {
     try testing.expect(!isValidUtf8(.{ .text = "\xff\xfe" }));
     // Blobs are expected to be binary, so they are not flagged.
     try testing.expect(isValidUtf8(.{ .blob = "\xff\xfe" }));
+}
+
+/// Render a value into `buf` for display in a grid or table cell.
+///
+/// This is the accessor a UI must use. `asTextSlice` returns null for
+/// INTEGER and REAL, because those classes own no text — the number is
+/// decoded into an i64 or f64 and the bytes are gone. A UI that calls
+/// `asTextSlice() orelse ""` therefore renders EVERY number as a blank
+/// cell, which is silent and looks like missing data.
+///
+/// Returns the written slice, truncated to fit. Control characters are
+/// escaped by `format`, so a value can never break the layout.
+pub fn render(buf: []u8, v: Value) []const u8 {
+    var w: std.Io.Writer = .fixed(buf);
+    v.format(&w) catch return buf[0..0];
+    return w.buffered();
+}
+
+test "render shows numbers, which asTextSlice cannot" {
+    var buf: [64]u8 = undefined;
+    // This is the whole reason render exists.
+    try testing.expectEqualStrings("42", render(&buf, .{ .integer = 42 }));
+    try testing.expectEqualStrings("-7", render(&buf, .{ .integer = -7 }));
+    try testing.expectEqualStrings("1.5", render(&buf, .{ .real = 1.5 }));
+
+    // The accessor that hides them.
+    try testing.expectEqual(@as(?[]const u8, null), (Value{ .integer = 42 }).asTextSlice());
+    try testing.expectEqual(@as(?[]const u8, null), (Value{ .real = 1.5 }).asTextSlice());
+}
+
+test "render handles every class" {
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("NULL", render(&buf, .null_value));
+    try testing.expectEqualStrings("alice", render(&buf, .{ .text = "alice" }));
+    try testing.expectEqualStrings("<blob 3 bytes>", render(&buf, .{ .blob = "abc" }));
+    try testing.expectEqualStrings("~odd", render(&buf, .{ .unknown = "odd" }));
+}
+
+test "render escapes control characters and truncates" {
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("a\\nb", render(&buf, .{ .text = "a\nb" }));
+
+    // A value too long for the buffer is cut, not overflowed.
+    var small: [4]u8 = undefined;
+    const out = render(&small, .{ .text = "abcdefghij" });
+    try testing.expect(out.len <= small.len);
+}
+
+test "render never writes past the buffer" {
+    var tiny: [1]u8 = undefined;
+    _ = render(&tiny, .{ .integer = 12345 });
+    var two: [2]u8 = undefined;
+    _ = render(&two, .{ .text = "hello" });
 }

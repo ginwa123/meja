@@ -686,3 +686,115 @@ test "setText truncates rather than overflowing" {
     try testing.expectEqual(@as(usize, 8), e.len);
     try testing.expectEqualStrings("a much l", e.text());
 }
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
+/// Copy `text` into `buf`, truncated to fit. Never writes past the end.
+pub fn clampTo(text: []const u8, buf: []u8) []const u8 {
+    const n = @min(text.len, buf.len -| 1);
+    @memcpy(buf[0..n], text[0..n]);
+    return buf[0..n];
+}
+
+/// Render one editor line with a visible caret, into `buf`.
+///
+/// The result is the line's text with one extra byte inserted at the
+/// caret. A caret sitting on a space is drawn as `_`, because a space
+/// for a caret is invisible and the user cannot tell where they are.
+///
+/// `caret_at` is an offset into `line_text`, or null for "no caret on
+/// this line" (the common case: the caret is on some other line).
+///
+/// This lives here rather than in the draw file because it is pure text
+/// manipulation, and because a test that copies the implementation to
+/// reach it tests nothing at all.
+pub fn renderLineWithCaret(line_text: []const u8, caret_at: ?usize, buf: []u8) []const u8 {
+    const at = caret_at orelse return clampTo(line_text, buf);
+
+    // One extra byte for the caret, and it must fit in `buf`. Every
+    // write below is bounded by `cap`; sizing the destination from the
+    // TEXT and then writing past it overflows whenever the text filled
+    // the buffer, which is exactly what a full-width line does.
+    const cap = @min(buf.len, line_text.len + 1);
+    if (cap == 0) return buf[0..0];
+    const out = buf[0..cap];
+
+    const caret = @min(at, line_text.len);
+    const head = @min(caret, cap -| 1);
+    @memcpy(out[0..head], line_text[0..head]);
+
+    // A caret sitting ON a space replaces it: the user sees one cursor,
+    // not a cursor followed by the very space it is sitting on. A caret
+    // anywhere else is inserted BEFORE the character under it.
+    const on_space = caret < line_text.len and line_text[caret] == ' ';
+    const consumed = on_space; // was the character at `caret` swallowed?
+    if (head < cap) out[head] = if (on_space) '_' else ' ';
+
+    // The tail after the caret, for whatever room is left.
+    var written = @min(head + 1, cap);
+    var i = caret + @intFromBool(consumed);
+    while (i < line_text.len and written < cap) : (i += 1) {
+        out[written] = line_text[i];
+        written += 1;
+    }
+    return out[0..written];
+}
+
+test "the caret lands at the caret position" {
+    var buf: [64]u8 = undefined;
+    // "SELECT" with the caret at index 3: "SEL" + marker + "ECT".
+    const out = renderLineWithCaret("SELECT", 3, &buf);
+    try testing.expectEqual(@as(usize, 7), out.len);
+    try testing.expectEqualStrings("SEL", out[0..3]);
+    try testing.expectEqual(@as(u8, ' '), out[3]);
+    try testing.expectEqualStrings("ECT", out[4..7]);
+}
+
+test "a caret on a space is drawn as an underscore" {
+    var buf: [64]u8 = undefined;
+    // "a b", caret on the space at index 1.
+    try testing.expectEqualStrings("a_b", renderLineWithCaret("a b", 1, &buf));
+}
+
+test "a caret on a letter is drawn as a space" {
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("ab ", renderLineWithCaret("ab", 2, &buf));
+}
+
+test "a caret past the end of the line still renders" {
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("abc ", renderLineWithCaret("abc", 99, &buf));
+}
+
+test "an empty line with a caret renders one space" {
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings(" ", renderLineWithCaret("", 0, &buf));
+}
+
+test "no caret just clamps the text" {
+    var buf: [8]u8 = undefined;
+    try testing.expectEqualStrings("abcdefgh"[0..7], renderLineWithCaret("abcdefgh", null, &buf));
+}
+
+test "rendering never writes past the buffer" {
+    // The regression this guards: the destination was sized from the
+    // TEXT length and a trailing NUL was written past it, so any line
+    // that filled the buffer overflowed.
+    var tiny: [1]u8 = undefined;
+    try testing.expect(renderLineWithCaret("hello world", 3, &tiny).len <= tiny.len);
+
+    var exact: [12]u8 = undefined;
+    try testing.expect(renderLineWithCaret("hello world", 0, &exact).len <= exact.len);
+
+    var zero: [0]u8 = undefined;
+    try testing.expectEqual(@as(usize, 0), renderLineWithCaret("abc", 1, &zero).len);
+}
+
+test "clampTo never writes past the buffer" {
+    var buf: [4]u8 = undefined;
+    try testing.expectEqualStrings("abc", clampTo("abcdefgh", &buf));
+    var one: [1]u8 = undefined;
+    try testing.expectEqual(@as(usize, 0), clampTo("abc", &one).len);
+}

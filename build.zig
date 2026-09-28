@@ -99,7 +99,7 @@ pub fn build(b: *std.Build) void {
     // --- GUI executable (optional) ---
     var gui_mod: ?*std.Build.Module = null;
     var gui_exe: ?*std.Build.Step.Compile = null;
-    if (glinlandui_dep) |gl| {
+    if (glinlandui_dep != null) {
         gui_mod = b.createModule(.{
             .root_source_file = b.path("src/gui/main.zig"),
             .target = target,
@@ -107,7 +107,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "meja", .module = meja_mod },
                 .{ .name = "databases", .module = databases_mod },
-                .{ .name = "glinlandui", .module = gl.module("glinlandui") },
+                .{ .name = "glinlandui", .module = glinlandui_dep.?.module("glinlandui") },
             },
         });
         const ge = b.addExecutable(.{
@@ -132,6 +132,27 @@ pub fn build(b: *std.Build) void {
         const run_gui_step = b.step("run-gui", "Run the meja GUI");
         run_gui_step.dependOn(&run_gui.step);
     }
+
+    // --- a dump tool: renders a real frame and prints what it drew ---
+    // Not installed; run it with `zig build inspect -- <db>`. It is how
+    // the GUI was verified without a human at the screen.
+    const inspect = b.addExecutable(.{
+        .name = "meja-inspect",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/gui/inspect.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "meja", .module = meja_mod },
+                .{ .name = "databases", .module = databases_mod },
+                .{ .name = "glinlandui", .module = glinlandui_dep.?.module("glinlandui") },
+            },
+        }),
+    });
+    const run_inspect = b.addRunArtifact(inspect);
+    if (b.args) |args| run_inspect.addArgs(args);
+    const inspect_step = b.step("inspect", "Render one frame and print it");
+    inspect_step.dependOn(&run_inspect.step);
 
     // --- tests ---
     // The core is tested directly against the `meja` module. It has no

@@ -42,6 +42,7 @@ const registry = ui.components.click_registry;
 const meja = @import("meja");
 const database = @import("databases").database;
 const query = meja.query;
+const value_mod = meja.value;
 const schema = meja.schema;
 const sql = meja.sql;
 const valmod = meja.value;
@@ -98,11 +99,12 @@ const App = struct {
     window_h: u32 = 0,
 
     fn init(gpa: Allocator, io: Io) App {
-        return .{
-            .gpa = gpa,
-            .io = io,
-            .ed = editor.Editor.init(undefined),
-        };
+        var self = App{ .gpa = gpa, .io = io };
+        // The editor MUST be bound to `sql_buf`. `Editor.init(undefined)`
+        // would give a zero-length slice, and the first keystroke would
+        // then write past the end of it.
+        self.ed = editor.Editor.init(&self.sql_buf);
+        return self;
     }
 
     /// Open a database and load the schema. Safe to call twice.
@@ -226,20 +228,26 @@ const App = struct {
             // Measure a bounded sample: measuring 200k rows to size a
             // column is exactly the kind of work that makes a browser
             // feel broken, and the width barely changes past a few dozen.
-            var scratch: std.ArrayList([]const u8) = .empty;
-            defer scratch.deinit(self.gpa);
+            var samples: std.ArrayList([]const u8) = .empty;
+            defer {
+                for (samples.items) |s| self.gpa.free(s);
+                samples.deinit(self.gpa);
+            }
 
             var sampled: usize = 0;
             for (self.result.rows) |row| {
                 if (sampled >= 100) break;
                 if (c >= row.values.len) continue;
                 const v = row.values[c];
-                scratch.append(self.gpa, v.asTextSlice() orelse "") catch break;
+                if (v.isNull()) continue; // renders as the word "NULL"
+                var cell_buf: [256]u8 = undefined;
+                const rendered = value_mod.render(&cell_buf, v);
+                samples.append(self.gpa, self.gpa.dupe(u8, rendered) catch break) catch break;
                 sampled += 1;
             }
 
             const header = if (c < self.result.columns.len) self.result.columns[c].name else "";
-            const w = grid.columnWidth(scratch.items, header, theme.font_size, theme.cell_padding);
+            const w = grid.columnWidth(samples.items, header, theme.font_size, theme.cell_padding);
             self.col_widths.append(self.gpa, w) catch return;
         }
     }
@@ -495,41 +503,18 @@ fn editorLine(self: *App, line: usize, has_caret: bool) void {
     const text = self.ed.buf[start..end];
 
     var buf: [1024]u8 = undefined;
-    const shown = if (has_caret) renderWithCaret(self, line, &buf) else clampTo(text, buf[0..]);
+    const caret_at: ?usize = if (has_caret and self.ed.caret.offset >= start and
+        self.ed.caret.offset <= end)
+        self.ed.caret.offset - start
+    else
+        null;
+    const shown = editor.renderLineWithCaret(text, caret_at, &buf);
 
     text_mod.label(.{
         .str = shown,
         .font_size = theme.font_size,
         .color = theme.text,
     });
-}
-
-/// Render one editor line, inserting a visible caret.
-fn renderWithCaret(self: *App, line: usize, buf: []u8) []const u8 {
-    const start = self.ed.lineStartAt(line);
-    var end = start;
-    while (end < self.ed.len and self.ed.buf[end] != '\n') end += 1;
-    const text = self.ed.buf[start..end];
-
-    if (self.ed.caret.offset < start or self.ed.caret.offset > end) {
-        return clampTo(text, buf);
-    }
-    const at = self.ed.caret.offset - start;
-    const caret_on_space = at < text.len and text[at] == ' ';
-    const inserted: u8 = if (caret_on_space) '_' else ' ';
-
-    const out = buf[0..@min(buf.len - 1, text.len + 1)];
-    @memcpy(out[0..at], text[0..at]);
-    out[at] = inserted;
-    @memcpy(out[at + 1 ..][0 .. text.len - at], text[at..]);
-    out[text.len + 1] = 0;
-    return out[0 .. text.len + 1];
-}
-
-fn clampTo(text: []const u8, buf: []u8) []const u8 {
-    const n = @min(text.len, buf.len -| 1);
-    @memcpy(buf[0..n], text[0..n]);
-    return buf[0..n];
 }
 
 /// The status line plus the result grid.
@@ -668,7 +653,7 @@ fn gridRowChildren(ctx: GridRowCtx) void {
         // are the same bytes and could not be told apart here at all.
         const is_null = v.isNull();
         var buf: [512]u8 = undefined;
-        const shown = if (is_null) "NULL" else clampTo(v.asTextSlice() orelse "", &buf);
+        const shown = if (is_null) "NULL" else value_mod.render(&buf, v);
         text_mod.label(.{
             .str = shown,
             .font_size = theme.font_size_small,
