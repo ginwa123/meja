@@ -1,0 +1,32 @@
+.{
+    .name = .meja,
+    .version = "0.0.0",
+    // Tracks the earliest Zig version that the package considers a
+    // supported use case. Both path deps below require 0.16.0 too.
+    .fingerprint = 0x3b32bea2a01abe5,
+    .minimum_zig_version = "0.16.0",
+
+    // Both dependencies are LOCAL path deps. Zig 0.16 REJECTS absolute
+    // paths here, so these must stay relative to this file's directory.
+    //
+    //   ../ruangsql     -> `databases` module: sqlite3 + libpq bindings.
+    //                      Ships the vendored amalgamation under
+    //                      vendor/sqlite3/ (gitignored upstream) which is
+    //                      what makes non-Linux targets linkable.
+    //   ../glinlandui   -> cross-platform immediate-mode GUI toolkit
+    //                      (Wayland/EGL on Linux, Cocoa on macOS,
+    //                      D3D11 on Windows). Supplies a *portable*
+    //                      headless backend in test builds, so GUI code
+    //                      is testable without a display server.
+    .dependencies = .{
+        .databases = .{ .path = "../ruangsql" },
+        .glinlandui = .{ .path = "../glinlandui" },
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "docs",
+    },
+}
