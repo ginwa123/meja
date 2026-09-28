@@ -7,3 +7,11 @@ pub fn main() !void {
     _ = meja;
     _ = glinlandui;
 }
+
+const editor = @import("editor.zig");
+const grid = @import("grid.zig");
+
+test {
+    _ = editor;
+    _ = grid;
+}
