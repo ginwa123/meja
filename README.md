@@ -17,7 +17,8 @@ Two frontends over one shared core:
 
 - **`meja`** — the CLI. No display server, so it builds and tests on
   Linux, macOS and Windows without a GUI session.
-- **`meja-gui`** — a glinlandui window (optional; `-Dgui=false` drops it).
+- **`meja-gui`** — a glinlandui window: schema tree, virtualised data
+  grid, and a multi-line SQL editor (optional; `-Dgui=false` drops it).
 
 Both depend on `meja.core`, which contains all the data-access logic.
 Neither frontend has any of its own.
@@ -79,24 +80,69 @@ Both dependencies are local path deps, relative in `build.zig.zon`
 | `../glinlandui` | cross-platform GUI toolkit |
 
 ```sh
-zig build                 # both binaries
-zig build test            # 115 tests
+zig build                    # both binaries
+zig build test               # 166 tests
 zig build test -Dgui=false   # CLI only, no Wayland toolchain needed
-zig build run -- app.db   # run the CLI
-zig build run-gui         # run the GUI
+zig build test-gui           # GUI tests only (headless, no display)
+zig build run -- app.db      # run the CLI
+zig build run-gui -- app.db  # run the GUI
 ```
+
+`meja-gui app.db` opens the database; with no argument it starts on an
+in-memory one. In the window: click a table to browse it, type SQL and
+press **Ctrl+Enter** to run, **Ctrl+K** to delete the current line.
+
+### Cross-compiling
+
+| target | CLI | GUI |
+|---|---|---|
+| `x86_64-linux` | ✅ | ✅ (needs a Wayland toolchain) |
+| `x86_64-windows` | ✅ | ✅ |
+| `aarch64-macos` | ✅ | needs the macOS SDK for AppKit |
+
+The macOS GUI cannot be linked from Linux — AppKit, Foundation and
+CoreGraphics ship only in the macOS SDK — so build that target on macOS
+or with an SDK present. Everything else cross-compiles from here.
 
 SQLite comes from the system library when one is present and from the
 vendored amalgamation otherwise, which is what makes cross-compiling
 work.
+
+## The GUI
+
+glinlandui provides the window, event loop, layout engine, text
+rasteriser, fifteen basic controls and a headless test driver. It does
+**not** provide a data grid, a tree view, or a multi-line text editor —
+and for a database browser those three are the product. So they are built
+from the primitives, in `src/gui/`:
+
+- **`grid.zig`** virtualises rows and columns. This is a correctness
+  requirement, not an optimisation: `click_registry.cap` is 256 entries
+  per frame and silently drops the rest, so a grid registering one
+  target per row would stop responding at row 256. macOS and Windows
+  also rasterize on the CPU, so per-frame cell count is the frame cost.
+- **`editor.zig`** is a plain byte buffer with a byte-offset caret,
+  drawn one line at a time. `input` is single-line ASCII by design.
+- **`theme.zig`** holds the palette. Its tests assert *relationships*
+  (NULL dimmer than a value, stripes close but distinguishable) rather
+  than exact colours, so the palette can be retuned without rewriting
+  tests.
+
+The GUI's 51 tests run headless — glinlandui's test build selects a
+portable backend, and the Driver renders real frames, so widget wiring
+is verified with no display server on any platform.
 
 ### Known limits
 
 - The binding's `exec` path discards SQLite's error message, so a failed
   `INSERT` reports the error name only. A failure raised while *stepping*
   a prepared statement keeps SQLite's wording.
-- No write path beyond running SQL. There is no row editor, so nothing
-  in the GUI or CLI can corrupt a value it did not construct.
-- The GUI frontend is a build-and-link stub, not a browser window yet.
-- The interactive REPL does not yet accumulate a multi-line statement
-  across lines reliably; use `-c` or `--stdin` for scripts.
+- No row editor. Writes happen by running SQL, so nothing in either
+  frontend can corrupt a value it did not construct.
+- The interactive CLI REPL does not reliably accumulate a multi-line
+  statement; use `-c` or `--stdin` for scripts. The GUI editor handles
+  multi-line input correctly.
+- The GUI's schema tree is capped at 200 visible tables; beyond that it
+  shows a count rather than scrolling.
+- macOS/Windows render on the CPU, so the grid is deliberately capped
+  rather than virtualised to the pixel.
