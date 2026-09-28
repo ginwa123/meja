@@ -402,48 +402,132 @@ pub const KEY_K: u32 = 37;
 
 /// Map a keycode to a printable ASCII byte (US layout), or null.
 ///
-/// Deliberately ASCII-only: glinlandui's key layer is ASCII too, and an
-/// editor that inserted a placeholder byte for an unmapped key would
-/// corrupt the SQL it exists to edit. Returning null means "not a
-/// character", and the caller leaves the buffer untouched.
+/// The codes are Linux **evdev** codes, and the mapping matches
+/// glinlandui's own `input.keyChar` so one key handler can serve both
+/// the single-line field and this multi-line editor.
+///
+/// Two things about evdev are easy to get wrong, and both fail
+/// *silently* -- the keyboard just types the wrong character:
+///
+///   1. Letter codes are not contiguous: `q` is 16, `a` is 30, `z` is
+///      44, and the run 30..38 ends at `l`, not `m`.
+///   2. The digit codes 2..11 are 1..**0**, in that order.
+///
+/// Returning null means "not a character"; the caller must then leave
+/// the buffer alone, because inserting a placeholder byte would corrupt
+/// the SQL.
 pub fn keyChar(keycode: u32, shift: bool) ?u8 {
-    // Letter rows, straight from the evdev layout glinlandui uses.
-    if (keycode >= 16 and keycode <= 25) return letter(keycode - 16 + 'q', shift); // q..p
-    if (keycode >= 30 and keycode <= 38) return letter(keycode - 30 + 'a', shift); // a..i
-    if (keycode >= 44 and keycode <= 50) return letter(keycode - 44 + 'z', shift); // z..m
-
-    // Number row: 2..11 are the digits 1..0.
-    if (keycode >= 2 and keycode <= 11) {
-        if (!shift) return @intCast(keycode - 2 + '1');
-        const shifted = [_]u8{ '!', '@', '#', '$', '%', '^', '&', '*', '(', ')' };
-        return shifted[keycode - 2];
+    // Letters: q..p, a..l, z..m, in evdev order.
+    const lower_letters = "qwertyuiopasdfghjklzxcvbnm";
+    const letter_codes = [_]u32{
+        16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+        30, 31, 32, 33, 34, 35, 36, 37, 38, 44,
+        45, 46, 47, 48, 49, 50,
+    };
+    for (letter_codes, 0..) |code, i| {
+        if (keycode != code) continue;
+        const c = lower_letters[i];
+        return if (shift) std.ascii.toUpper(c) else c;
     }
 
-    // Everything a SQL statement actually needs. A flat table rather
-    // than overlapping switch prongs, so there is no chance of two
-    // prongs claiming the same code.
-    const symbols = [_]struct { code: u32, plain: u8, shifted: u8 }{
-        .{ .code = 12, .plain = '-', .shifted = '_' },
-        .{ .code = 13, .plain = '=', .shifted = '+' },
-        .{ .code = 39, .plain = '\'', .shifted = '"' },
-        .{ .code = 40, .plain = '`', .shifted = '~' },
-        .{ .code = 42, .plain = '\\', .shifted = '|' },
-        .{ .code = 51, .plain = ';', .shifted = ':' },
-        .{ .code = 54, .plain = ',', .shifted = '<' },
-        .{ .code = 55, .plain = '.', .shifted = '>' },
-        .{ .code = 56, .plain = '/', .shifted = '?' },
-        .{ .code = 97, .plain = '/', .shifted = '?' },
-        .{ .code = 57, .plain = ' ', .shifted = ' ' },
+    // Digits: evdev 2..11 are 1,2,...,0 -- NOT 0..9.
+    if (keycode >= 2 and keycode <= 11) {
+        // evdev 11 is the '0' key, so the run is 1..0 and the last one
+        // does not follow the +1 pattern.
+        if (!shift) return if (keycode == 11) '0' else @intCast(keycode - 2 + '1');
+        // Shifted 1..0 is  ! @ # $ % ^ & * ( )
+        const shifted_digits = [_]u8{ '!', '@', '#', '$', '%', '^', '&', '*', '(', ')' };
+        return shifted_digits[keycode - 2];
+    }
+
+    // Punctuation. Numeric bytes throughout: a quote inside a string
+    // literal needs escaping, and getting that escaping wrong is a
+    // parse error at best. `shift` picks the third column.
+    const punct = [_]struct { code: u32, plain: u8, shifted: u8 }{
+        .{ .code = 12, .plain = 0x2D, .shifted = 0x5F }, // - _
+        .{ .code = 13, .plain = 0x3D, .shifted = 0x2B }, // = +
+        .{ .code = 26, .plain = 0x5B, .shifted = 0x7B }, // [ {
+        .{ .code = 27, .plain = 0x5D, .shifted = 0x7D }, // ] }
+        .{ .code = 39, .plain = 0x3B, .shifted = 0x3A }, // ; :
+        .{ .code = 40, .plain = 0x27, .shifted = 0x22 }, // '  "
+        .{ .code = 41, .plain = 0x60, .shifted = 0x7E }, // `  ~
+        .{ .code = 43, .plain = 0x5C, .shifted = 0x7C }, // \  |
+        .{ .code = 51, .plain = 0x2C, .shifted = 0x3C }, // ,  <
+        .{ .code = 52, .plain = 0x2E, .shifted = 0x3E }, // .  >
+        .{ .code = 53, .plain = 0x2F, .shifted = 0x3F }, // /  ?
+        .{ .code = 57, .plain = 0x20, .shifted = 0x20 }, // space
     };
-    for (symbols) |entry| {
-        if (entry.code == keycode) return if (shift) entry.shifted else entry.plain;
+    for (punct) |p| {
+        if (keycode != p.code) continue;
+        return if (shift) p.shifted else p.plain;
     }
     return null;
 }
 
-fn letter(base: u32, shift: bool) u8 {
-    const c: u8 = @intCast(base);
-    return if (shift) c - 32 else c;
+/// A key press: the evdev code, and whether Shift must be held.
+pub const Keystroke = struct { code: u32, shift: bool };
+
+/// The inverse of `keyChar`: the key that produces `ch`.
+///
+/// Used by the tests to type through the same path a user does, rather
+/// than writing the buffer directly. Without it a test would pass on a
+/// keyboard wired to entirely the wrong letters.
+pub fn keyCodeFor(ch: u8) ?Keystroke {
+    if (ch >= 'a' and ch <= 'z') {
+        const lower_letters = "qwertyuiopasdfghjklzxcvbnm";
+        const letter_codes = [_]u32{
+            16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+            30, 31, 32, 33, 34, 35, 36, 37, 38, 44,
+            45, 46, 47, 48, 49, 50,
+        };
+        for (lower_letters, 0..) |c, i| {
+            if (c == ch) return .{ .code = letter_codes[i], .shift = false };
+        }
+    }
+    if (ch >= 'A' and ch <= 'Z') {
+        if (keyCodeFor(std.ascii.toLower(ch))) |k| {
+            return .{ .code = k.code, .shift = true };
+        }
+    }
+    if (ch >= '1' and ch <= '9') return .{ .code = 2 + (ch - '1'), .shift = false };
+    if (ch == '0') return .{ .code = 11, .shift = false };
+
+    // Digits under shift, which are not letters and not punctuation.
+    const shifted_digits = [_]u8{ '!', '@', '#', '$', '%', '^', '&', '*', '(', ')' };
+    if (std.mem.indexOfScalar(u8, &shifted_digits, ch)) |i| {
+        return .{ .code = 2 + @as(u32, @intCast(i)), .shift = true };
+    }
+
+    // Punctuation, mirroring the table in keyChar.
+    const punct = [_]struct { code: u32, plain: u8, shifted: u8 }{
+        .{ .code = 12, .plain = 0x2D, .shifted = 0x5F },
+        .{ .code = 13, .plain = 0x3D, .shifted = 0x2B },
+        .{ .code = 26, .plain = 0x5B, .shifted = 0x7B },
+        .{ .code = 27, .plain = 0x5D, .shifted = 0x7D },
+        .{ .code = 39, .plain = 0x3B, .shifted = 0x3A },
+        .{ .code = 40, .plain = 0x27, .shifted = 0x22 },
+        .{ .code = 41, .plain = 0x60, .shifted = 0x7E },
+        .{ .code = 43, .plain = 0x5C, .shifted = 0x7C },
+        .{ .code = 51, .plain = 0x2C, .shifted = 0x3C },
+        .{ .code = 52, .plain = 0x2E, .shifted = 0x3E },
+        .{ .code = 53, .plain = 0x2F, .shifted = 0x3F },
+        .{ .code = 57, .plain = 0x20, .shifted = 0x20 },
+    };
+    if (!shifted_digit(ch)) {
+        for (punct) |p| {
+            if (p.plain == ch) return .{ .code = p.code, .shift = false };
+        }
+    }
+    for (punct) |p| {
+        if (p.shifted == ch and ch != 0x20) return .{ .code = p.code, .shift = true };
+    }
+    return null;
+}
+
+/// True for the characters the digit row produces under Shift.
+fn shifted_digit(ch: u8) bool {
+    const shifted_digits = [_]u8{ '!', '@', '#', '$', '%', '^', '&', '*', '(', ')' };
+    return std.mem.indexOfScalar(u8, &shifted_digits, ch) != null;
 }
 
 // ---------------------------------------------------------------------------
@@ -639,24 +723,73 @@ test "movement clamps at both ends" {
     try testing.expectEqual(@as(usize, 2), e.caret.offset);
 }
 
-test "keyChar maps letters, digits and symbols" {
-    try testing.expectEqual(@as(?u8, 'a'), keyChar(30, false));
-    try testing.expectEqual(@as(?u8, 'A'), keyChar(30, true));
-    try testing.expectEqual(@as(?u8, 'z'), keyChar(44, false));
+test "keyChar maps every letter to its real evdev code" {
+    // The evdev letter codes are NOT contiguous: q=16, a=30, z=44, and
+    // the run 30..38 stops at L, not M. A contiguous assumption types the
+    // wrong letters instead of failing.
+    const cases = [_]struct { ch: u8, code: u32 }{
+        .{ .ch = 'q', .code = 16 }, .{ .ch = 'p', .code = 25 },
+        .{ .ch = 'a', .code = 30 }, .{ .ch = 'l', .code = 38 },
+        .{ .ch = 'z', .code = 44 }, .{ .ch = 'm', .code = 50 },
+    };
+    for (cases) |c| {
+        try testing.expectEqual(@as(?u8, c.ch), keyChar(c.code, false));
+        try testing.expectEqual(@as(?u8, std.ascii.toUpper(c.ch)), keyChar(c.code, true));
+    }
+}
+
+test "keyChar maps the digits and the SQL punctuation" {
     try testing.expectEqual(@as(?u8, '1'), keyChar(2, false));
+    try testing.expectEqual(@as(?u8, '0'), keyChar(11, false));
     try testing.expectEqual(@as(?u8, '!'), keyChar(2, true));
-    // A key that maps to nothing must return null, not a placeholder.
+    try testing.expectEqual(@as(?u8, '&'), keyChar(8, true)); // shifted 7
+    try testing.expectEqual(@as(?u8, '*'), keyChar(9, true)); // shifted 8
+    // The characters a query actually needs, checked through the
+    // INVERSE so the two tables cannot drift apart in the test itself.
+    const needed = [_]u8{ ' ', '*', '=', ',', '.', '/', 0x27, '_', '<', '>' };
+    for (needed) |ch| {
+        const stroke = keyCodeFor(ch) orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(@as(?u8, ch), keyChar(stroke.code, stroke.shift));
+    }
+}
+
+test "an unmapped key returns null rather than a placeholder" {
     try testing.expectEqual(@as(?u8, null), keyChar(KEY_LEFT, false));
+    try testing.expectEqual(@as(?u8, null), keyChar(KEY_ENTER, false));
     try testing.expectEqual(@as(?u8, null), keyChar(999, false));
+}
+
+test "keyCodeFor is the exact inverse of keyChar" {
+    // The E2E test types through keyCodeFor, so the two must agree for
+    // every character a query uses -- or the test would pass on a
+    // keyboard that types the wrong thing.
+    const text = "SELECT name, score FROM users WHERE id > 1 AND x <= 2";
+    for (text) |ch| {
+        const stroke = keyCodeFor(ch) orelse {
+            std.debug.print("no keycode for this character", .{});
+            return error.TestUnexpectedResult;
+        };
+        try testing.expectEqual(@as(?u8, ch), keyChar(stroke.code, stroke.shift));
+    }
+}
+
+test "keyCodeFor covers upper case and shifted symbols" {
+    try testing.expectEqual(@as(u32, 30), keyCodeFor('a').?.code);
+    try testing.expectEqual(@as(u32, 30), keyCodeFor('A').?.code);
+    try testing.expect(keyCodeFor('A').?.shift);
+    try testing.expect(!keyCodeFor('a').?.shift);
+    try testing.expectEqual(@as(u32, 12), keyCodeFor('_').?.code);
+    try testing.expectEqual(@as(u32, 57), keyCodeFor(' ').?.code);
 }
 
 test "typing through handleKey produces the SQL" {
     var buf: [64]u8 = undefined;
     var e = Editor.init(&buf);
-    // Seed with a slice, then prove the KEY path appends the right byte.
-    // evdev 32 is 'c' (30='a', 31='b', 32='c').
+    // Seed with a slice, then prove the KEY path appends the right byte,
+    // using the shared inverse so the test cannot disagree with keyChar.
     _ = e.insertSlice("SELE");
-    try testing.expectEqual(handleKey(&e, 32, false, false), Action.edited);
+    const stroke = keyCodeFor('c') orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(handleKey(&e, stroke.code, stroke.shift, false), Action.edited);
     try testing.expectEqualStrings("SELEc", e.text());
 }
 

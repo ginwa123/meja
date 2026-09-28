@@ -47,6 +47,8 @@ const schema = meja.schema;
 const sql = meja.sql;
 const valmod = meja.value;
 
+const app_mod = @import("app.zig");
+const App = app_mod.App;
 const editor = @import("editor.zig");
 const grid = @import("grid.zig");
 const theme = @import("theme.zig");
@@ -66,236 +68,6 @@ const TableNode = struct {
     columns_failed: bool = false,
 };
 
-const App = struct {
-    gpa: Allocator,
-    io: Io,
-
-    db: database.Db = .{},
-    db_open: bool = false,
-    db_path: []const u8 = "",
-    /// Set when the open failed, so the UI can explain why.
-    open_error: ?anyerror = null,
-
-    // Schema tree.
-    tables: std.ArrayList(TableNode) = .empty,
-    /// Index into `tables` of the selected table, if any.
-    selected: ?usize = null,
-
-    // Result set.
-    result: query.ResultSet = undefined,
-    has_result: bool = false,
-    status: []const u8 = "no database open",
-
-    // Column pixel widths, recomputed when a result arrives.
-    col_widths: std.ArrayList(u16) = .empty,
-
-    // Editor.
-    sql_buf: [16 * 1024]u8 = undefined,
-    ed: editor.Editor = undefined,
-    ed_has_focus: bool = true,
-
-    // Cached layout metrics, refreshed each frame.
-    window_w: u32 = 0,
-    window_h: u32 = 0,
-
-    fn init(gpa: Allocator, io: Io) App {
-        var self = App{ .gpa = gpa, .io = io };
-        // The editor MUST be bound to `sql_buf`. `Editor.init(undefined)`
-        // would give a zero-length slice, and the first keystroke would
-        // then write past the end of it.
-        self.ed = editor.Editor.init(&self.sql_buf);
-        return self;
-    }
-
-    /// Open a database and load the schema. Safe to call twice.
-    fn open(self: *App, path: []const u8) void {
-        if (self.db_open) {
-            self.db.deinit();
-            self.db_open = false;
-        }
-        self.freeTables();
-        self.clearResult();
-
-        // `init` takes a NUL-terminated path because it is handed to
-        // sqlite3_open; a slice from argv is not sentinel-terminated.
-        const zpath = self.gpa.dupeZ(u8, path) catch {
-            self.status = "out of memory";
-            return;
-        };
-        defer self.gpa.free(zpath);
-
-        self.db.init(self.io, zpath) catch |err| {
-            self.open_error = err;
-            self.status = "cannot open database";
-            return;
-        };
-        self.db_open = true;
-        self.open_error = null;
-        self.db_path = path;
-        self.loadTables();
-        self.status = "ready";
-    }
-
-    fn freeTables(self: *App) void {
-        for (self.tables.items) |*t| {
-            if (t.columns) |cols| {
-                schema.freeColumns(self.gpa, cols);
-                t.columns = null;
-            }
-            self.gpa.free(t.name);
-        }
-        self.tables.deinit(self.gpa);
-        self.tables = .empty;
-    }
-
-    fn clearResult(self: *App) void {
-        if (self.has_result) {
-            self.result.deinit();
-            self.has_result = false;
-        }
-        self.col_widths.deinit(self.gpa);
-        self.col_widths = .empty;
-    }
-
-    fn loadTables(self: *App) void {
-        if (!self.db_open) return;
-        const objects = schema.listObjects(self.gpa, &self.db, &.{ .table, .view }) catch {
-            self.status = "cannot read schema";
-            return;
-        };
-        defer schema.freeObjects(self.gpa, objects);
-
-        for (objects) |o| {
-            self.tables.append(self.gpa, .{
-                .name = self.gpa.dupe(u8, o.name) catch return,
-                .kind = o.kind,
-            }) catch return;
-        }
-    }
-
-    /// Run whatever is in the editor. The core splits multi-statement
-    /// scripts, so a script with three statements runs all three.
-    fn runEditor(self: *App) void {
-        if (!self.db_open) {
-            self.status = "no database open";
-            return;
-        }
-        const text = self.ed.text();
-        if (std.mem.trim(u8, text, " \t\r\n").len == 0) {
-            self.status = "nothing to run";
-            return;
-        }
-
-        const statements = sql.splitStatements(self.gpa, text) catch {
-            self.status = "out of memory";
-            return;
-        };
-        defer sql.freeStatements(self.gpa, statements);
-
-        // Only the LAST statement's result is shown, which matches what
-        // the sqlite3 CLI does: a script's final SELECT is the answer.
-        for (statements) |st| {
-            self.clearResult();
-            self.result = query.run(self.gpa, &self.db, st.text, .{}) catch {
-                self.status = "query failed";
-                continue;
-            };
-            self.has_result = true;
-            if (self.result.error_message) |m| {
-                self.status = m;
-            } else if (self.result.columnCount() == 0) {
-                var buf: [128]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "{d} rows affected", .{
-                    self.result.rows_affected,
-                }) catch "ok";
-                self.status = self.gpa.dupe(u8, msg) catch "ok";
-            } else {
-                self.status = "ok";
-            }
-            self.recomputeColumnWidths();
-        }
-    }
-
-    /// Size each column to its widest cell. Only the rows actually
-    /// loaded are measured, which is the same set the grid draws.
-    fn recomputeColumnWidths(self: *App) void {
-        self.col_widths.deinit(self.gpa);
-        self.col_widths = .empty;
-        if (!self.has_result) return;
-
-        const width = self.result.columnCount();
-        for (0..width) |c| {
-            // Measure a bounded sample: measuring 200k rows to size a
-            // column is exactly the kind of work that makes a browser
-            // feel broken, and the width barely changes past a few dozen.
-            var samples: std.ArrayList([]const u8) = .empty;
-            defer {
-                for (samples.items) |s| self.gpa.free(s);
-                samples.deinit(self.gpa);
-            }
-
-            var sampled: usize = 0;
-            for (self.result.rows) |row| {
-                if (sampled >= 100) break;
-                if (c >= row.values.len) continue;
-                const v = row.values[c];
-                if (v.isNull()) continue; // renders as the word "NULL"
-                var cell_buf: [256]u8 = undefined;
-                const rendered = value_mod.render(&cell_buf, v);
-                samples.append(self.gpa, self.gpa.dupe(u8, rendered) catch break) catch break;
-                sampled += 1;
-            }
-
-            const header = if (c < self.result.columns.len) self.result.columns[c].name else "";
-            const w = grid.columnWidth(samples.items, header, theme.font_size, theme.cell_padding);
-            self.col_widths.append(self.gpa, w) catch return;
-        }
-    }
-
-    /// Toggle a table's expansion, loading its columns on first open.
-    fn toggleTable(self: *App, index: usize) void {
-        if (index >= self.tables.items.len) return;
-        const t = &self.tables.items[index];
-        t.expanded = !t.expanded;
-        if (t.expanded and t.columns == null and !t.columns_failed) {
-            const cols = schema.listColumns(self.gpa, &self.db, t.name) catch {
-                t.columns_failed = true;
-                return;
-            };
-            t.columns = cols;
-        }
-    }
-
-    /// Load a table's first page into the grid and load it into the editor.
-    fn browseTable(self: *App, index: usize) void {
-        if (index >= self.tables.items.len) return;
-        self.selected = index;
-        const t = &self.tables.items[index];
-
-        // The editor gets a plain `SELECT *`, which is the query a user
-        // would have written, so they can edit it into something else.
-        const quoted = sql.quoteIfNeeded(self.gpa, t.name) catch return;
-        defer self.gpa.free(quoted);
-        const seed = std.fmt.allocPrint(self.gpa, "SELECT * FROM {s}", .{quoted}) catch return;
-        defer self.gpa.free(seed);
-        self.ed.setText(seed);
-
-        self.runEditor();
-    }
-
-    fn onKey(self: *App, mods: input_mod.Mods, keycode: u32) bool {
-        if (!self.ed_has_focus) return false;
-        switch (editor.handleKey(&self.ed, keycode, mods.shift, mods.ctrl)) {
-            .run_requested => {
-                self.runEditor();
-                return true;
-            },
-            .edited => return true,
-            .ignored => return false,
-        }
-    }
-};
-
 // ---------------------------------------------------------------------------
 // Drawing
 // ---------------------------------------------------------------------------
@@ -303,10 +75,17 @@ const App = struct {
 // `box` children are COMPTIME FUNCTION POINTERS taking ctx by value, so
 // every child function must be a top-level declaration, not a closure.
 
+pub fn App_root(ctx: ?*anyopaque, w: u32, h: u32) void {
+    root(ctx, w, h);
+}
+
 fn root(ctx: ?*anyopaque, w: u32, h: u32) void {
     const self: *App = @ptrCast(@alignCast(ctx.?));
     self.window_w = w;
     self.window_h = h;
+    // Every label below borrows from this arena, so it resets once, here,
+    // before anything claims space.
+    self.beginFrame();
 
     box_mod.box(.{
         .id = "root",
@@ -538,17 +317,25 @@ fn resultPaneChildren(self: *App) void {
         .direction = .row,
         .gap = 8,
     }, self, statusChildren);
+
+    // The grid itself. It was defined but never called, so the window
+    // showed the status line and nothing else -- which no unit test
+    // could see, because they all asserted on the result set rather
+    // than on what was drawn.
+    drawGrid(self, @as(f32, @floatFromInt(self.window_h)) * 0.5, 0);
 }
 
 fn statusChildren(self: *App) void {
     text_mod.label(.{ .str = self.status, .color = theme.text_dim });
     if (self.has_result) {
-        var buf: [96]u8 = undefined;
-        const counts = std.fmt.bufPrint(&buf, "{d} rows x {d} cols", .{
+        // Written into the frame arena, not a local: the draw command
+        // keeps this pointer until the rasteriser runs.
+        const counts = self.claimText(64);
+        const counts_text = std.fmt.bufPrint(counts, "{d} rows x {d} cols", .{
             self.result.rowCount(),
             self.result.columnCount(),
-        }) catch "";
-        text_mod.label(.{ .str = counts, .color = theme.text_faint });
+        }) catch counts[0..0];
+        text_mod.label(.{ .str = counts_text, .color = theme.text_faint });
         if (self.result.truncated) {
             text_mod.label(.{ .str = "truncated", .color = theme.warn });
         }
@@ -652,8 +439,10 @@ fn gridRowChildren(ctx: GridRowCtx) void {
         // reason the core recovers storage classes. Without that, the two
         // are the same bytes and could not be told apart here at all.
         const is_null = v.isNull();
-        var buf: [512]u8 = undefined;
-        const shown = if (is_null) "NULL" else value_mod.render(&buf, v);
+        // NOT a local buffer: the draw command keeps this pointer until
+        // the rasteriser runs, by which time a local would be dead.
+        const buf = self.claimText(512);
+        const shown = if (is_null) "NULL" else value_mod.render(buf, v);
         text_mod.label(.{
             .str = shown,
             .font_size = theme.font_size_small,

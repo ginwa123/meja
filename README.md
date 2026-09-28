@@ -81,11 +81,33 @@ Both dependencies are local path deps, relative in `build.zig.zon`
 
 ```sh
 zig build                    # both binaries
-zig build test               # 166 tests
+zig build test               # 190 tests
 zig build test -Dgui=false   # CLI only, no Wayland toolchain needed
 zig build test-gui           # GUI tests only (headless, no display)
 zig build run -- app.db      # run the CLI
 zig build run-gui -- app.db  # run the GUI
+zig build inspect -- app.db  # render one frame and print it
+```
+
+`meja-gui` needs a **Wayland compositor**; it reports
+`error.NoWaylandDisplay` rather than starting without one. The GUI
+tests do not, because glinlandui's test build selects a portable
+backend.
+
+`zig build inspect` opens a real database, runs a real frame through the
+headless driver and prints what it drew. It is the quickest way to see
+what the GUI is doing without a screen:
+
+```
+$ zig build inspect -- app.db
+TABLES (1):
+  users
+EDITOR: SELECT * FROM users
+RESULT: 3 rows x 4 cols in 9 us
+COLUMNS: id name email score
+| 1  | alice | a@x.com | 91.5 |
+| 2  | bob   | b@x.com | 72   |
+| 3  | carol | NULL    | NULL |
 ```
 
 `meja-gui app.db` opens the database; with no argument it starts on an
@@ -128,9 +150,15 @@ from the primitives, in `src/gui/`:
   than exact colours, so the palette can be retuned without rewriting
   tests.
 
-The GUI's 51 tests run headless — glinlandui's test build selects a
+The GUI's 71 tests run headless — glinlandui's test build selects a
 portable backend, and the Driver renders real frames, so widget wiring
 is verified with no display server on any platform.
+
+Of those, `e2e_test.zig` drives the **real** `App`: it types a query one
+keystroke at a time through the app's own key handler, presses Ctrl+Enter,
+and then asserts the output appears in the rendered frame. That last step
+matters. Asserting only on `App.result` would pass even if the grid
+rendered blank — and it did, until these tests caught it.
 
 ### Known limits
 
@@ -144,5 +172,8 @@ is verified with no display server on any platform.
   multi-line input correctly.
 - The GUI's schema tree is capped at 200 visible tables; beyond that it
   shows a count rather than scrolling.
+- The GUI keeps each frame's label text in a 512 KB arena that resets
+  every frame. A result set wide enough to exhaust it (hundreds of
+  columns) draws those cells blank rather than failing.
 - macOS/Windows render on the CPU, so the grid is deliberately capped
   rather than virtualised to the pixel.
