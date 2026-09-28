@@ -23,7 +23,11 @@
 const std = @import("std");
 
 pub const sql = @import("core/sql.zig");
+pub const value = @import("core/value.zig");
+pub const select_list = @import("core/select_list.zig");
 
 test {
     _ = sql;
+    _ = value;
+    _ = select_list;
 }
