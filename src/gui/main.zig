@@ -1,17 +1,743 @@
-const std = @import("std");
-const meja = @import("meja");
-const glinlandui = @import("glinlandui");
+//! meja — the desktop database browser.
+//!
+//! Frontend over `meja.core`, drawn with glinlandui. Like the CLI it holds
+//! no data-access logic: the core runs the SQL and the schema queries,
+//! and this file only presents what comes back.
+//!
+//! ## What had to be built rather than used
+//!
+//! glinlandui provides a window, an event loop, a layout engine, a text
+//! rasteriser, fifteen basic controls and a headless test driver. It does
+//! not provide a data grid, a tree view, or a multi-line text editor —
+//! and for a database browser those three *are* the product. So:
+//!
+//!   - The grid is `box` cells positioned from `grid.visible`, with a
+//!     `list` row for selection. It declares only the rows in view,
+//!     because the click registry caps at 256 entries per frame.
+//!   - The tree is a `box` per table, expanding to its columns.
+//!   - The editor is `editor.zig`, a plain byte buffer, drawn as one
+//!     `text.label` per line with a caret rendered inline.
+//!
+//! ## Layout
+//!
+//!   +------------------+--------------------------------+
+//!   | schema tree      | SQL editor (grows with content)|
+//!   | (fixed width)    +--------------------------------+
+//!   |                  | result grid (scrolls)          |
+//!   +------------------+--------------------------------+
 
-pub fn main() !void {
-    _ = std;
-    _ = meja;
-    _ = glinlandui;
-}
+const std = @import("std");
+const Io = std.Io;
+const Allocator = std.mem.Allocator;
+
+const ui = @import("glinlandui");
+const box_mod = ui.components.box;
+const text_mod = ui.components.text;
+const button = ui.components.button;
+const input_mod = ui.components.input;
+const scroll_mod = ui.components.scroll;
+const list_mod = ui.components.list;
+const registry = ui.components.click_registry;
+
+const meja = @import("meja");
+const database = @import("databases").database;
+const query = meja.query;
+const schema = meja.schema;
+const sql = meja.sql;
+const valmod = meja.value;
 
 const editor = @import("editor.zig");
 const grid = @import("grid.zig");
+const theme = @import("theme.zig");
+
+// ---------------------------------------------------------------------------
+// Application state
+// ---------------------------------------------------------------------------
+
+/// One table in the sidebar, with its columns loaded lazily.
+const TableNode = struct {
+    name: []const u8,
+    kind: schema.ObjectKind,
+    expanded: bool = false,
+    columns: ?[]schema.Column = null,
+    /// True once a `column count failed, so the tree shows an error
+    /// rather than retrying every frame.
+    columns_failed: bool = false,
+};
+
+const App = struct {
+    gpa: Allocator,
+    io: Io,
+
+    db: database.Db = .{},
+    db_open: bool = false,
+    db_path: []const u8 = "",
+    /// Set when the open failed, so the UI can explain why.
+    open_error: ?anyerror = null,
+
+    // Schema tree.
+    tables: std.ArrayList(TableNode) = .empty,
+    /// Index into `tables` of the selected table, if any.
+    selected: ?usize = null,
+
+    // Result set.
+    result: query.ResultSet = undefined,
+    has_result: bool = false,
+    status: []const u8 = "no database open",
+
+    // Column pixel widths, recomputed when a result arrives.
+    col_widths: std.ArrayList(u16) = .empty,
+
+    // Editor.
+    sql_buf: [16 * 1024]u8 = undefined,
+    ed: editor.Editor = undefined,
+    ed_has_focus: bool = true,
+
+    // Cached layout metrics, refreshed each frame.
+    window_w: u32 = 0,
+    window_h: u32 = 0,
+
+    fn init(gpa: Allocator, io: Io) App {
+        return .{
+            .gpa = gpa,
+            .io = io,
+            .ed = editor.Editor.init(undefined),
+        };
+    }
+
+    /// Open a database and load the schema. Safe to call twice.
+    fn open(self: *App, path: []const u8) void {
+        if (self.db_open) {
+            self.db.deinit();
+            self.db_open = false;
+        }
+        self.freeTables();
+        self.clearResult();
+
+        // `init` takes a NUL-terminated path because it is handed to
+        // sqlite3_open; a slice from argv is not sentinel-terminated.
+        const zpath = self.gpa.dupeZ(u8, path) catch {
+            self.status = "out of memory";
+            return;
+        };
+        defer self.gpa.free(zpath);
+
+        self.db.init(self.io, zpath) catch |err| {
+            self.open_error = err;
+            self.status = "cannot open database";
+            return;
+        };
+        self.db_open = true;
+        self.open_error = null;
+        self.db_path = path;
+        self.loadTables();
+        self.status = "ready";
+    }
+
+    fn freeTables(self: *App) void {
+        for (self.tables.items) |*t| {
+            if (t.columns) |cols| {
+                schema.freeColumns(self.gpa, cols);
+                t.columns = null;
+            }
+            self.gpa.free(t.name);
+        }
+        self.tables.deinit(self.gpa);
+        self.tables = .empty;
+    }
+
+    fn clearResult(self: *App) void {
+        if (self.has_result) {
+            self.result.deinit();
+            self.has_result = false;
+        }
+        self.col_widths.deinit(self.gpa);
+        self.col_widths = .empty;
+    }
+
+    fn loadTables(self: *App) void {
+        if (!self.db_open) return;
+        const objects = schema.listObjects(self.gpa, &self.db, &.{ .table, .view }) catch {
+            self.status = "cannot read schema";
+            return;
+        };
+        defer schema.freeObjects(self.gpa, objects);
+
+        for (objects) |o| {
+            self.tables.append(self.gpa, .{
+                .name = self.gpa.dupe(u8, o.name) catch return,
+                .kind = o.kind,
+            }) catch return;
+        }
+    }
+
+    /// Run whatever is in the editor. The core splits multi-statement
+    /// scripts, so a script with three statements runs all three.
+    fn runEditor(self: *App) void {
+        if (!self.db_open) {
+            self.status = "no database open";
+            return;
+        }
+        const text = self.ed.text();
+        if (std.mem.trim(u8, text, " \t\r\n").len == 0) {
+            self.status = "nothing to run";
+            return;
+        }
+
+        const statements = sql.splitStatements(self.gpa, text) catch {
+            self.status = "out of memory";
+            return;
+        };
+        defer sql.freeStatements(self.gpa, statements);
+
+        // Only the LAST statement's result is shown, which matches what
+        // the sqlite3 CLI does: a script's final SELECT is the answer.
+        for (statements) |st| {
+            self.clearResult();
+            self.result = query.run(self.gpa, &self.db, st.text, .{}) catch {
+                self.status = "query failed";
+                continue;
+            };
+            self.has_result = true;
+            if (self.result.error_message) |m| {
+                self.status = m;
+            } else if (self.result.columnCount() == 0) {
+                var buf: [128]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "{d} rows affected", .{
+                    self.result.rows_affected,
+                }) catch "ok";
+                self.status = self.gpa.dupe(u8, msg) catch "ok";
+            } else {
+                self.status = "ok";
+            }
+            self.recomputeColumnWidths();
+        }
+    }
+
+    /// Size each column to its widest cell. Only the rows actually
+    /// loaded are measured, which is the same set the grid draws.
+    fn recomputeColumnWidths(self: *App) void {
+        self.col_widths.deinit(self.gpa);
+        self.col_widths = .empty;
+        if (!self.has_result) return;
+
+        const width = self.result.columnCount();
+        for (0..width) |c| {
+            // Measure a bounded sample: measuring 200k rows to size a
+            // column is exactly the kind of work that makes a browser
+            // feel broken, and the width barely changes past a few dozen.
+            var scratch: std.ArrayList([]const u8) = .empty;
+            defer scratch.deinit(self.gpa);
+
+            var sampled: usize = 0;
+            for (self.result.rows) |row| {
+                if (sampled >= 100) break;
+                if (c >= row.values.len) continue;
+                const v = row.values[c];
+                scratch.append(self.gpa, v.asTextSlice() orelse "") catch break;
+                sampled += 1;
+            }
+
+            const header = if (c < self.result.columns.len) self.result.columns[c].name else "";
+            const w = grid.columnWidth(scratch.items, header, theme.font_size, theme.cell_padding);
+            self.col_widths.append(self.gpa, w) catch return;
+        }
+    }
+
+    /// Toggle a table's expansion, loading its columns on first open.
+    fn toggleTable(self: *App, index: usize) void {
+        if (index >= self.tables.items.len) return;
+        const t = &self.tables.items[index];
+        t.expanded = !t.expanded;
+        if (t.expanded and t.columns == null and !t.columns_failed) {
+            const cols = schema.listColumns(self.gpa, &self.db, t.name) catch {
+                t.columns_failed = true;
+                return;
+            };
+            t.columns = cols;
+        }
+    }
+
+    /// Load a table's first page into the grid and load it into the editor.
+    fn browseTable(self: *App, index: usize) void {
+        if (index >= self.tables.items.len) return;
+        self.selected = index;
+        const t = &self.tables.items[index];
+
+        // The editor gets a plain `SELECT *`, which is the query a user
+        // would have written, so they can edit it into something else.
+        const quoted = sql.quoteIfNeeded(self.gpa, t.name) catch return;
+        defer self.gpa.free(quoted);
+        const seed = std.fmt.allocPrint(self.gpa, "SELECT * FROM {s}", .{quoted}) catch return;
+        defer self.gpa.free(seed);
+        self.ed.setText(seed);
+
+        self.runEditor();
+    }
+
+    fn onKey(self: *App, mods: input_mod.Mods, keycode: u32) bool {
+        if (!self.ed_has_focus) return false;
+        switch (editor.handleKey(&self.ed, keycode, mods.shift, mods.ctrl)) {
+            .run_requested => {
+                self.runEditor();
+                return true;
+            },
+            .edited => return true,
+            .ignored => return false,
+        }
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Drawing
+// ---------------------------------------------------------------------------
+//
+// `box` children are COMPTIME FUNCTION POINTERS taking ctx by value, so
+// every child function must be a top-level declaration, not a closure.
+
+fn root(ctx: ?*anyopaque, w: u32, h: u32) void {
+    const self: *App = @ptrCast(@alignCast(ctx.?));
+    self.window_w = w;
+    self.window_h = h;
+
+    box_mod.box(.{
+        .id = "root",
+        .w = .grow,
+        .h = .grow,
+        .direction = .row,
+        .bg = theme.bg_app,
+        .gap = 0,
+    }, self, rootChildren);
+}
+
+fn rootChildren(self: *App) void {
+    sidebar(self);
+    rightPane(self);
+}
+
+/// The left sidebar: the database name, a status line, and the tree.
+fn sidebar(self: *App) void {
+    box_mod.box(.{
+        .id = "sidebar",
+        .w = .{ .fixed = theme.sidebar_width },
+        .h = .grow,
+        .direction = .column,
+        .bg = theme.bg_panel,
+        .pad = 8,
+        .gap = 6,
+    }, self, sidebarChildren);
+}
+
+fn sidebarChildren(self: *App) void {
+    text_mod.label(.{
+        .str = if (self.db_open) self.db_path else "no database",
+        .font_size = theme.font_size_small,
+        .color = theme.text_dim,
+    });
+
+    if (!self.db_open) {
+        text_mod.label(.{
+            .str = "meja <database>",
+            .font_size = theme.font_size_small,
+            .color = theme.text_faint,
+        });
+        return;
+    }
+
+    if (self.tables.items.len == 0) {
+        text_mod.label(.{ .str = "no tables", .color = theme.text_faint });
+        return;
+    }
+
+    // Each table is its own box so it can carry an id and a click target.
+    // The tree is bounded: a database with 10,000 tables would otherwise
+    // declare 10,000 boxes in one frame and blow the click budget.
+    const max_nodes = 200;
+    const count = @min(self.tables.items.len, max_nodes);
+    for (0..count) |i| {
+        tableRow(self, i);
+    }
+    if (self.tables.items.len > max_nodes) {
+        var buf: [64]u8 = undefined;
+        const more = std.fmt.bufPrint(&buf, "... and {d} more", .{
+            self.tables.items.len - max_nodes,
+        }) catch "";
+        text_mod.label(.{ .str = more, .color = theme.text_faint });
+    }
+}
+
+/// Context for one sidebar row. `box.children` receives its ctx by
+/// value, so this is how the row index reaches the draw function without
+/// a global.
+const TreeRowCtx = struct {
+    app: *App,
+    index: usize,
+};
+
+fn tableRow(app: *App, index: usize) void {
+    const t = &app.tables.items[index];
+    const is_selected = app.selected == index;
+    const ctx = TreeRowCtx{ .app = app, .index = index };
+
+    box_mod.box(.{
+        .id = treeRowId(index),
+        .w = .grow,
+        .h = .{ .fixed = @floatFromInt(theme.row_height - 2) },
+        .direction = .row,
+        .gap = 4,
+        .pad = 2,
+        .bg = if (is_selected) theme.bg_selected else theme.bg_panel,
+        .radius = 3,
+    }, ctx, treeRowChildren);
+
+    // `box` never fires on_click, so the click target is registered
+    // explicitly once the element exists.
+    //
+    // The index-carrying `registerZCursor` is used rather than
+    // `registerClickCursor` precisely because it takes the row index in
+    // the callback. The alternative — stashing the index in a mutable
+    // global read by the click thunk — is only correct because declare
+    // happens to be single-threaded and immediate, which is a property
+    // of the framework rather than of this code.
+    registry.registerZCursor(
+        ui.zclay.getElementId(treeRowId(index)),
+        onTreeRowClick,
+        app,
+        index,
+        0,
+        .pointer,
+    );
+    _ = t;
+}
+
+fn treeRowChildren(ctx: TreeRowCtx) void {
+    const self = ctx.app;
+    if (ctx.index >= self.tables.items.len) return;
+    const t = &self.tables.items[ctx.index];
+
+    text_mod.label(.{
+        .str = if (t.expanded) "- " else "+ ",
+        .font_size = theme.font_size_small,
+        .color = theme.text_dim,
+    });
+    text_mod.label(.{
+        .str = t.name,
+        .font_size = theme.font_size,
+        .color = if (self.selected == ctx.index) theme.text_bright else theme.text,
+    });
+    if (t.kind == .view) {
+        text_mod.label(.{ .str = "view", .color = theme.text_faint });
+    }
+}
+
+fn onTreeRowClick(ctx: ?*anyopaque, index: usize) void {
+    const self: *App = @ptrCast(@alignCast(ctx.?));
+    self.browseTable(index);
+}
+
+fn treeRowId(index: usize) []const u8 {
+    // Small fixed buffer: ids must outlive the declare, and a table name
+    // would be unbounded, so an index is used instead.
+    var buf: [24]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "tree.row.{d}", .{index}) catch "tree.row";
+    return s;
+}
+
+/// The right side: editor on top, result grid below.
+fn rightPane(self: *App) void {
+    box_mod.box(.{
+        .id = "right",
+        .w = .grow,
+        .h = .grow,
+        .direction = .column,
+        .gap = 0,
+    }, self, rightPaneChildren);
+}
+
+fn rightPaneChildren(self: *App) void {
+    editorPane(self);
+    resultPane(self);
+}
+
+fn editorPane(self: *App) void {
+    const line_count = @max(self.ed.lineCount(), 1);
+    const height = @as(f32, @floatFromInt(line_count)) *
+        @as(f32, @floatFromInt(theme.row_height)) + 24;
+
+    box_mod.box(.{
+        .id = "editor",
+        .w = .grow,
+        .h = .{ .fixed = @min(height, @as(f32, @floatFromInt(self.window_h / 2))) },
+        .direction = .column,
+        .bg = theme.bg_editor,
+        .pad = 6,
+        .gap = 4,
+    }, self, editorPaneChildren);
+}
+
+fn editorPaneChildren(self: *App) void {
+    text_mod.label(.{ .str = "SQL", .color = theme.text_dim });
+
+    // The editor is a plain multi-line buffer, so it is drawn one label
+    // per line with a caret block after the character under it. The
+    // labels are clipped by the fixed-height box above.
+    const line_count = @max(self.ed.lineCount(), 1);
+    const caret_line = self.ed.lineNumber(self.ed.caret.offset);
+    for (0..line_count) |line| {
+        editorLine(self, line, line == caret_line);
+    }
+}
+
+fn editorLine(self: *App, line: usize, has_caret: bool) void {
+    const start = self.ed.lineStartAt(line);
+    var end = start;
+    while (end < self.ed.len and self.ed.buf[end] != '\n') end += 1;
+    const text = self.ed.buf[start..end];
+
+    var buf: [1024]u8 = undefined;
+    const shown = if (has_caret) renderWithCaret(self, line, &buf) else clampTo(text, buf[0..]);
+
+    text_mod.label(.{
+        .str = shown,
+        .font_size = theme.font_size,
+        .color = theme.text,
+    });
+}
+
+/// Render one editor line, inserting a visible caret.
+fn renderWithCaret(self: *App, line: usize, buf: []u8) []const u8 {
+    const start = self.ed.lineStartAt(line);
+    var end = start;
+    while (end < self.ed.len and self.ed.buf[end] != '\n') end += 1;
+    const text = self.ed.buf[start..end];
+
+    if (self.ed.caret.offset < start or self.ed.caret.offset > end) {
+        return clampTo(text, buf);
+    }
+    const at = self.ed.caret.offset - start;
+    const caret_on_space = at < text.len and text[at] == ' ';
+    const inserted: u8 = if (caret_on_space) '_' else ' ';
+
+    const out = buf[0..@min(buf.len - 1, text.len + 1)];
+    @memcpy(out[0..at], text[0..at]);
+    out[at] = inserted;
+    @memcpy(out[at + 1 ..][0 .. text.len - at], text[at..]);
+    out[text.len + 1] = 0;
+    return out[0 .. text.len + 1];
+}
+
+fn clampTo(text: []const u8, buf: []u8) []const u8 {
+    const n = @min(text.len, buf.len -| 1);
+    @memcpy(buf[0..n], text[0..n]);
+    return buf[0..n];
+}
+
+/// The status line plus the result grid.
+fn resultPane(self: *App) void {
+    box_mod.box(.{
+        .id = "results",
+        .w = .grow,
+        .h = .grow,
+        .direction = .column,
+        .bg = theme.bg_app,
+        .pad = 6,
+        .gap = 4,
+    }, self, resultPaneChildren);
+}
+
+fn resultPaneChildren(self: *App) void {
+    box_mod.box(.{
+        .id = "status",
+        .w = .grow,
+        .h = .{ .fixed = @floatFromInt(theme.row_height) },
+        .direction = .row,
+        .gap = 8,
+    }, self, statusChildren);
+}
+
+fn statusChildren(self: *App) void {
+    text_mod.label(.{ .str = self.status, .color = theme.text_dim });
+    if (self.has_result) {
+        var buf: [96]u8 = undefined;
+        const counts = std.fmt.bufPrint(&buf, "{d} rows x {d} cols", .{
+            self.result.rowCount(),
+            self.result.columnCount(),
+        }) catch "";
+        text_mod.label(.{ .str = counts, .color = theme.text_faint });
+        if (self.result.truncated) {
+            text_mod.label(.{ .str = "truncated", .color = theme.warn });
+        }
+    }
+}
+
+/// The grid itself: a header row plus the virtualised body.
+fn drawGrid(self: *App, viewport_h: f32, scroll_y: f32) void {
+    if (!self.has_result) {
+        text_mod.label(.{ .str = "no results — type SQL and press Ctrl+Enter", .color = theme.text_faint });
+        return;
+    }
+    const total_rows = self.result.rowCount();
+    const total_cols = self.result.columnCount();
+    if (total_cols == 0) return;
+
+    const vis = grid.visible(.{
+        .total_rows = total_rows,
+        .total_cols = total_cols,
+        .scroll_y = scroll_y,
+        .height = viewport_h,
+        .width = @floatFromInt(self.window_w),
+    });
+
+    const cols = grid.visibleColumns(self.col_widths.items, @floatFromInt(self.window_w), 0);
+    if (cols.count == 0) return;
+
+    // Header
+    box_mod.box(.{
+        .id = "grid.header",
+        .w = .grow,
+        .h = .{ .fixed = @floatFromInt(theme.row_height) },
+        .direction = .row,
+        .gap = 0,
+        .bg = theme.bg_header,
+    }, self, gridHeaderChildren);
+
+    // Body: only the visible slice is declared, which is what keeps a
+    // 1M-row table inside the 256-entry click budget.
+    var row: usize = 0;
+    while (row < vis.row_count) : (row += 1) {
+        const index = vis.first_row + row;
+        if (index >= total_rows) break;
+        drawGridRow(self, index, cols.first, cols.count);
+    }
+}
+
+fn gridHeaderChildren(self: *App) void {
+    const cols = grid.visibleColumns(self.col_widths.items, @floatFromInt(self.window_w), 0);
+    var c: usize = cols.first;
+    while (c < cols.first + cols.count) : (c += 1) {
+        if (c >= self.col_widths.items.len) break;
+        const header = if (c < self.result.columns.len) self.result.columns[c].name else "";
+        text_mod.label(.{
+            .str = header,
+            .font_size = theme.font_size_small,
+            .color = theme.text_bright,
+        });
+    }
+}
+
+/// Context for one grid row: which row, and which column window.
+/// Passed by value to the `box` child function, which is exactly what
+/// that parameter exists for.
+const GridRowCtx = struct {
+    app: *App,
+    row: usize,
+    first_col: usize,
+    col_count: usize,
+};
+
+fn drawGridRow(app: *App, row_index: usize, first_col: usize, col_count: usize) void {
+    const ctx = GridRowCtx{
+        .app = app,
+        .row = row_index,
+        .first_col = first_col,
+        .col_count = col_count,
+    };
+    box_mod.box(.{
+        .id = gridRowId(row_index),
+        .w = .grow,
+        .h = .{ .fixed = @floatFromInt(theme.row_height) },
+        .direction = .row,
+        .gap = 0,
+        .bg = if (row_index % 2 == 0) theme.bg_row_even else theme.bg_row_odd,
+    }, ctx, gridRowChildren);
+}
+
+fn gridRowChildren(ctx: GridRowCtx) void {
+    const self = ctx.app;
+    if (!self.has_result) return;
+    if (ctx.row >= self.result.rowCount()) return;
+    const row = self.result.rows[ctx.row];
+
+    var c: usize = 0;
+    while (c < ctx.col_count) : (c += 1) {
+        const col = ctx.first_col + c;
+        if (col >= row.values.len) break;
+        const v = row.values[col];
+        // NULL is styled differently from the empty string — the whole
+        // reason the core recovers storage classes. Without that, the two
+        // are the same bytes and could not be told apart here at all.
+        const is_null = v.isNull();
+        var buf: [512]u8 = undefined;
+        const shown = if (is_null) "NULL" else clampTo(v.asTextSlice() orelse "", &buf);
+        text_mod.label(.{
+            .str = shown,
+            .font_size = theme.font_size_small,
+            .color = if (is_null) theme.text_null_value else theme.text,
+        });
+    }
+}
+
+fn gridRowId(index: usize) []const u8 {
+    var buf: [24]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "grid.row.{d}", .{index}) catch "grid.row";
+    return s;
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+pub fn main(init: std.process.Init) !void {
+    const gpa = ui.platform.allocator;
+    var threaded: Io.Threaded = .init(gpa, .{});
+    defer threaded.deinit();
+
+    var app = App.init(gpa, threaded.io());
+    defer {
+        app.clearResult();
+        app.freeTables();
+        if (app.db_open) app.db.deinit();
+    }
+
+    // Open whatever the user named. With no argument the app starts on
+    // an in-memory database so the window is never dead on arrival — a
+    // database browser that opens to an error is a bad first impression.
+    const argv = try init.minimal.args.toSlice(init.arena.allocator());
+    if (argv.len > 1) {
+        app.open(argv[1]);
+    } else {
+        app.open(":memory:");
+        app.status = "no database — pass a path to browse one";
+    }
+
+    var host = try ui.host.Host.init(gpa, &app, App_root_wrapper);
+    defer host.deinit();
+    host.keys.register(App_key_wrapper, &app);
+
+    var window = ui.Window.init(gpa, .{
+        .app_id = "meja",
+        .title = "meja",
+        .width = 1200,
+        .height = 800,
+        .min_width = 640,
+        .min_height = 400,
+    });
+    window.delegate = host.delegate();
+    try window.run();
+}
+
+fn App_root_wrapper(ctx: ?*anyopaque, w: u32, h: u32) void {
+    root(ctx, w, h);
+}
+
+fn App_key_wrapper(ctx: ?*anyopaque, mods: input_mod.Mods, keycode: u32) bool {
+    const self: *App = @ptrCast(@alignCast(ctx.?));
+    return self.onKey(mods, keycode);
+}
 
 test {
     _ = editor;
     _ = grid;
+    _ = theme;
+    _ = @import("e2e_test.zig");
 }
