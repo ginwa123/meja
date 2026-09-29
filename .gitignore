@@ -1,0 +1,38 @@
+# Zig build output and caches
+.zig-cache/
+zig-cache/
+zig-out/
+zig-pkg/
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Local databases and their sidecars.
+# `meja` is a database browser, so a db opened from the repo root is
+# local scratch data, never source. SQLite also drops -wal/-shm/
+# -journal next to the db while a connection is live.
+*.db
+*.db3
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
+
+# ...except deliberate test fixtures, which must stay committable.
+# A silent ignore is worse than no ignore, so the escape hatch is
+# spelled out rather than left to whoever hits it later.
+!testdata/**
+!tests/fixtures/**
