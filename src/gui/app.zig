@@ -23,7 +23,17 @@ const input_mod = glin.components.input;
 
 const editor = @import("editor.zig");
 const grid = @import("grid.zig");
+const picker_mod = @import("picker.zig");
+const dialog = @import("dialog.zig");
 const theme = @import("theme.zig");
+
+/// Which text field owns the keyboard.
+///
+/// The window has two editable fields — the SQL editor and the picker's
+/// path — and a key event goes to exactly one of them, so which is
+/// which is stated rather than inferred from which panel happens to be
+/// open.
+pub const Focus = enum { sql_editor, path };
 
 /// One table in the sidebar, with its columns loaded lazily.
 const TableNode = struct {
@@ -43,6 +53,15 @@ pub const App = struct {
 
     db: database.Db = .{},
     db_open: bool = false,
+
+    /// The open database's path, and the storage behind it.
+    ///
+    /// It is OWNED rather than borrowed, which it has to be: the path
+    /// now comes from the picker's field, and that field is editable,
+    /// so a slice of it would change under the UI the moment the user
+    /// typed. `db_path` is always a slice of `db_path_buf`, or empty.
+    db_path_buf: [picker_mod.path_capacity]u8 = undefined,
+    db_path_len: usize = 0,
     db_path: []const u8 = "",
     /// Set when the open failed, so the UI can explain why.
     open_error: ?anyerror = null,
@@ -55,7 +74,15 @@ pub const App = struct {
     // Result set.
     result: query.ResultSet = undefined,
     has_result: bool = false,
-    status: []const u8 = "no database open",
+
+    /// The status line, and the storage behind it.
+    ///
+    /// Owned for the same reason `db_path` is: it is handed to a draw
+    /// command that keeps the pointer until the frame is rasterised, and
+    /// it used to be built by `dupe`-ing onto the heap with nothing
+    /// ever freeing it. `status` is always a slice of `status_buf`.
+    status_buf: [256]u8 = undefined,
+    status: []const u8 = "",
 
     // Column pixel widths, recomputed when a result arrives.
     col_widths: std.ArrayList(u16) = .empty,
@@ -79,7 +106,10 @@ pub const App = struct {
     text_arena: [512 * 1024]u8 = undefined,
     text_used: usize = 0,
     ed: editor.Editor = undefined,
-    ed_has_focus: bool = true,
+
+    // Database selection.
+    picker: picker_mod.Picker = undefined,
+    focus: Focus = .sql_editor,
 
     // Cached layout metrics, refreshed each frame.
     window_w: u32 = 0,
@@ -120,6 +150,21 @@ pub const App = struct {
         // Bound to `sql_buf` AFTER the struct is in its final place, so
         // the pointer refers to the App the caller actually holds.
         self.ed = editor.Editor.init(&self.sql_buf);
+        // Same rule for the picker's own field buffer.
+        self.picker.init();
+        self.setStatus("no database open — Ctrl+O to choose one", .{});
+    }
+
+    /// Write the status line.
+    ///
+    /// Truncates rather than failing: a status line that is a character
+    /// short of a full error is still useful, and a UI thread must not
+    /// unwind out of a key handler. `status` always points into
+    /// `status_buf`, so it outlives the call that produced it and never
+    /// has to be freed.
+    pub fn setStatus(self: *App, comptime fmt: []const u8, args: anytype) void {
+        self.status = std.fmt.bufPrint(self.status_buf[0..], fmt, args) catch
+            self.status_buf[0..0];
     }
 
     /// Open a database and load the schema. Safe to call twice.
@@ -134,21 +179,231 @@ pub const App = struct {
         // `init` takes a NUL-terminated path because it is handed to
         // sqlite3_open; a slice from argv is not sentinel-terminated.
         const zpath = self.gpa.dupeZ(u8, path) catch {
-            self.status = "out of memory";
+            self.setStatus("out of memory", .{});
             return;
         };
         defer self.gpa.free(zpath);
 
         self.db.init(self.io, zpath) catch |err| {
             self.open_error = err;
-            self.status = "cannot open database";
+            // Say WHICH path failed, not just that something did. The
+            // path is the only thing the user can act on.
+            self.setStatus("cannot open {s}: {s}", .{ path, @errorName(err) });
+            // Leave the previous path alone: it is still what the
+            // window is showing, and clearing it would make a failed
+            // switch look like a closed database.
             return;
         };
         self.db_open = true;
         self.open_error = null;
-        self.db_path = path;
+        self.setDbPath(path);
         self.loadTables();
-        self.status = "ready";
+        self.setStatus("ready — {s}", .{self.db_path});
+    }
+
+    /// Copy the open database's path into storage the App owns.
+    ///
+    /// The copy is the point: the caller's slice may be argv, the
+    /// picker's field, or a scratch buffer, and only this one is
+    /// guaranteed to still hold the same bytes when the UI reads it.
+    fn setDbPath(self: *App, path: []const u8) void {
+        const n = @min(path.len, self.db_path_buf.len);
+        // Overlap-tolerant, in case a caller passes `self.db_path` back in.
+        @memmove(self.db_path_buf[0..n], path[0..n]);
+        self.db_path_len = n;
+        self.db_path = self.db_path_buf[0..n];
+    }
+
+    // --- database selection ------------------------------------------------
+    //
+    // The one thing a database browser must let a user do is point it
+    // at a different database. Until the picker existed the only way to
+    // change it was to restart the process with a different argument,
+    // which is not a way to browse.
+
+    /// Show the picker and put the keyboard in the path field.
+    ///
+    /// Reopening starts from what is already open rather than from the
+    /// process directory, so the user is not dropped somewhere new every
+    /// time they look.
+    pub fn openPicker(self: *App) void {
+        self.picker.open = true;
+        self.focus = .path;
+
+        // The field starts EMPTY, deliberately. Seeding it with the open
+        // database's path means the first character the user types is
+        // APPENDED to it, so typing `/data/app.db` into a field that
+        // already said `:memory:` silently produced
+        // `:memory:/data/app.db` and a baffling "cannot open". An empty
+        // field has no wrong answer.
+        self.picker.field.clear();
+
+        // The listing, by contrast, starts where the user already is: the
+        // directory holding the open database. That is the one piece of
+        // context worth carrying over.
+        if (self.picker.dir_len == 0 and self.db_open and self.db_path.len > 0) {
+            const parent = picker_mod.parentOf(self.db_path);
+            if (picker_mod.Picker.isDirectory(self.io, parent)) self.picker.setDir(parent);
+        }
+        self.picker.scan(self.gpa, self.io);
+        self.setStatus(
+            "Enter opens the path — Up/Down choose, Tab goes to SQL, Ctrl+O closes",
+            .{},
+        );
+    }
+
+    /// Ask the SYSTEM file dialog for a database, and open what it returns.
+    ///
+    /// The other way to point the app at a database, next to `openPicker`'s
+    /// hand-rolled one. Which is primary depends on the host: on a desktop
+    /// this is the button people reach for, because it is the dialog their
+    /// operating system already taught them; the picker is what still works
+    /// when there is no system dialog at all, and what the GUI tests drive,
+    /// because a test cannot click a native dialog.
+    ///
+    /// It blocks while the dialog is open. That is what a file dialog IS —
+    /// AppKit, COM and the XDG portal all run their own modal loop — and the
+    /// window is frozen for the duration by design, not by accident. The one
+    /// consequence here is that this cannot be called from anywhere that
+    /// expects the app to keep repainting.
+    pub fn browseForDatabase(self: *App) void {
+        // Start where the user already is: the directory of the open
+        // database, or the picker's if it has one. Null when there is
+        // nowhere obvious — `:memory:` has no parent directory, and
+        // "the current directory" of a GUI process is whatever the user
+        // launched it from, which is rarely where their data is. The
+        // platform's own default (a home directory) is the better guess
+        // when we have none.
+        const start: ?[]const u8 = blk: {
+            if (self.picker.dir_len > 0) break :blk self.picker.dir();
+            if (self.db_open and self.db_path.len > 0 and
+                !std.mem.eql(u8, self.db_path, ":memory:"))
+            {
+                break :blk picker_mod.parentOf(self.db_path);
+            }
+            break :blk null;
+        };
+
+        // `browse` is fallible only because the toolkit's is, and on this
+        // target it is always `Unsupported` — which is the case the GUI tests
+        // exercise and the one a browser hits.
+        const outcome = dialog.browse(self.gpa, start) catch
+            dialog.Outcome{ .unavailable = .failed };
+        // The path is a COPY the outcome owns, so it is released here. It is
+        // copied again by `usePath` into storage the App owns, which is what
+        // makes it safe to free at the end of this scope.
+        defer outcome.free(self.gpa);
+
+        switch (outcome) {
+            .opened => |path| {
+                if (path.len == 0) {
+                    self.setStatus("the file dialog returned an empty path", .{});
+                    return;
+                }
+                // Through `usePath`, like every other route to a database,
+                // so "what Browse opens" and "what a clicked row opens"
+                // cannot drift apart.
+                self.usePath(path);
+            },
+            .cancelled => {
+                // The user closed the window on purpose. Say so briefly and
+                // change nothing: the previously open database is still open,
+                // and clearing it would make a cancel look like a close.
+                self.setStatus("browse cancelled — still on {s}", .{if (self.db_open) self.db_path else "nothing"});
+            },
+            .unavailable => |limit| {
+                self.setStatus("{s}", .{limit.explain()});
+            },
+        }
+    }
+
+    pub fn closePicker(self: *App) void {
+        self.picker.open = false;
+        self.focus = .sql_editor;
+        if (self.db_open) self.setStatus("ready — {s}", .{self.db_path});
+    }
+
+    /// List `path` as the picker's directory.
+    pub fn enterDirectory(self: *App, path: []const u8) void {
+        self.picker.setDir(path);
+        self.picker.scan(self.gpa, self.io);
+        if (self.picker.error_message) |err| {
+            self.setStatus("cannot read {s}: {s}", .{ self.picker.dir(), err });
+        } else {
+            self.setStatus("{d} entries in {s}", .{
+                self.picker.entries.items.len,
+                self.picker.dir(),
+            });
+        }
+    }
+
+    /// Go up one level, unless already at a root.
+    pub fn goUp(self: *App) void {
+        const here = self.picker.dir();
+        const parent = picker_mod.parentOf(here);
+        if (parent.len == 0 or std.mem.eql(u8, parent, here)) {
+            self.setStatus("already at the top", .{});
+            return;
+        }
+        self.enterDirectory(parent);
+    }
+
+    /// Act on a clicked listing row: a directory is entered, a file
+    /// opened. The keyboard's Up/Down + Enter land here too, so the two
+    /// input methods cannot disagree.
+    pub fn activateCandidate(self: *App, index: usize) void {
+        const p = &self.picker;
+        if (index >= p.entries.items.len) return;
+        p.cursor = index;
+        const entry = p.entries.items[index];
+
+        // ".." is a navigation row, not a real one: joining it onto the
+        // directory would produce a path that does not name anything.
+        if (std.mem.eql(u8, entry.name, "..")) {
+            self.goUp();
+            return;
+        }
+        const full = p.fullPath(self.gpa, entry) catch {
+            self.setStatus("out of memory", .{});
+            return;
+        };
+        defer self.gpa.free(full);
+        self.usePath(full);
+    }
+
+    /// Open, or — for a directory — enter, whatever is in the path
+    /// field. Trimmed first because a trailing newline is what a field
+    /// collects from a paste.
+    pub fn openTypedPath(self: *App) void {
+        const typed = std.mem.trim(u8, self.picker.field.text(), " \t\r\n");
+        if (typed.len == 0) {
+            self.setStatus("type a path, or choose one below", .{});
+            return;
+        }
+        self.usePath(typed);
+    }
+
+    /// The one place a path becomes the open database, or the listed
+    /// directory. Both the typed field and a clicked row come through
+    /// here, so "what Enter does" and "what clicking does" cannot drift
+    /// apart.
+    pub fn usePath(self: *App, path: []const u8) void {
+        // A directory cannot be opened as a database, and reporting that
+        // as an error would be a lie: it is navigation, so it navigates.
+        if (picker_mod.Picker.isDirectory(self.io, path)) {
+            self.picker.field.setText(path);
+            self.enterDirectory(path);
+            return;
+        }
+
+        self.open(path);
+        if (!self.db_open) return; // `open` already said what went wrong.
+
+        self.picker.field.setText(self.db_path);
+        // Follow the database into its own directory, so reopening the
+        // panel starts where the user now is.
+        self.enterDirectory(picker_mod.parentOf(self.db_path));
+        self.closePicker();
     }
 
     pub fn freeTables(self: *App) void {
@@ -192,17 +447,17 @@ pub const App = struct {
     /// scripts, so a script with three statements runs all three.
     pub fn runEditor(self: *App) void {
         if (!self.db_open) {
-            self.status = "no database open";
+            self.setStatus("no database open — Ctrl+O to choose one", .{});
             return;
         }
         const text = self.ed.text();
         if (std.mem.trim(u8, text, " \t\r\n").len == 0) {
-            self.status = "nothing to run";
+            self.setStatus("nothing to run", .{});
             return;
         }
 
         const statements = sql.splitStatements(self.gpa, text) catch {
-            self.status = "out of memory";
+            self.setStatus("out of memory", .{});
             return;
         };
         defer sql.freeStatements(self.gpa, statements);
@@ -212,20 +467,20 @@ pub const App = struct {
         for (statements) |st| {
             self.clearResult();
             self.result = query.run(self.gpa, &self.db, st.text, .{}) catch {
-                self.status = "query failed";
+                self.setStatus("query failed", .{});
                 continue;
             };
             self.has_result = true;
             if (self.result.error_message) |m| {
-                self.status = m;
+                // COPIED, not borrowed. The result set is deinited on the
+                // next run and on every database switch, so a status
+                // line pointing into it would outlive the memory it
+                // names.
+                self.setStatus("{s}", .{m});
             } else if (self.result.columnCount() == 0) {
-                var buf: [128]u8 = undefined;
-                const msg = std.fmt.bufPrint(&buf, "{d} rows affected", .{
-                    self.result.rows_affected,
-                }) catch "ok";
-                self.status = self.gpa.dupe(u8, msg) catch "ok";
+                self.setStatus("{d} rows affected", .{self.result.rows_affected});
             } else {
-                self.status = "ok";
+                self.setStatus("ok", .{});
             }
             self.recomputeColumnWidths();
         }
@@ -298,8 +553,28 @@ pub const App = struct {
         self.runEditor();
     }
 
+    /// Route one key event.
+    ///
+    /// Ctrl+O is the only global shortcut — it opens the picker and puts
+    /// the keyboard in the path field, and closes it again. Everything
+    /// else goes to whichever field `focus` names, because the window
+    /// has two of them and a keystroke may only have one meaning.
     pub fn onKey(self: *App, mods: input_mod.Mods, keycode: u32) bool {
-        if (!self.ed_has_focus) return false;
+        if (mods.ctrl and keycode == editor.KEY_O) {
+            if (self.picker.open) self.closePicker() else self.openPicker();
+            return true;
+        }
+        if (self.focus == .path) return self.onPathKey(mods, keycode);
+        // The picker is open but the editor has the keyboard: Tab is how
+        // the user gets to the path field without reaching for the mouse.
+        if (self.picker.open and keycode == editor.KEY_TAB) {
+            self.focus = .path;
+            return true;
+        }
+        return self.onEditorKey(mods, keycode);
+    }
+
+    fn onEditorKey(self: *App, mods: input_mod.Mods, keycode: u32) bool {
         switch (editor.handleKey(&self.ed, keycode, mods.shift, mods.ctrl)) {
             .run_requested => {
                 self.runEditor();
@@ -308,5 +583,40 @@ pub const App = struct {
             .edited => return true,
             .ignored => return false,
         }
+    }
+
+    /// Keys for the picker's path field.
+    ///
+    /// Enter and the arrow keys are taken BEFORE the shared editor
+    /// handler, because the sensible meanings here are not the editor's:
+    /// a path has no lines to break, and Up/Down through a listing is
+    /// more use than moving a caret through a single-line string.
+    fn onPathKey(self: *App, mods: input_mod.Mods, keycode: u32) bool {
+        switch (keycode) {
+            editor.KEY_ENTER => {
+                self.openTypedPath();
+                return true;
+            },
+            editor.KEY_TAB => {
+                self.focus = .sql_editor;
+                return true;
+            },
+            editor.KEY_UP => {
+                self.picker.moveCursor(-1);
+                return true;
+            },
+            editor.KEY_DOWN => {
+                self.picker.moveCursor(1);
+                return true;
+            },
+            else => {},
+        }
+        // Everything else — typing, Backspace, Home/End, selection — is
+        // exactly what the SQL editor does, so it is literally the same
+        // handler and the same editor type.
+        return switch (editor.handleKey(&self.picker.field, keycode, mods.shift, mods.ctrl)) {
+            .run_requested, .edited => true,
+            .ignored => false,
+        };
     }
 };

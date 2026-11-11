@@ -77,11 +77,11 @@ Both dependencies are local path deps, relative in `build.zig.zon`
 | dep | what it provides |
 |---|---|
 | `../ruangsql` (`databases`) | sqlite3 + libpq bindings |
-| `../glinlandui` | cross-platform GUI toolkit |
+| `../glinlandui` | cross-platform GUI toolkit, including the system file dialog |
 
 ```sh
 zig build                    # both binaries
-zig build test               # 193 tests
+zig build test               # 254 core + CLI tests
 zig build test -Dgui=false   # CLI only, no Wayland toolchain needed
 zig build test-gui           # GUI tests only (headless, no display)
 zig build run -- app.db      # run the CLI
@@ -113,6 +113,54 @@ COLUMNS: id name email score
 `meja-gui app.db` opens the database; with no argument it starts on an
 in-memory one. In the window: click a table to browse it, type SQL and
 press **Ctrl+Enter** to run, **Ctrl+K** to delete the current line.
+
+## Opening a database
+
+Two ways, and both are always there:
+
+- **Browse…** opens the **system** file dialog — the XDG desktop portal
+  on Linux, `NSOpenPanel` on macOS, `IFileDialog` on Windows, through
+  glinlandui's `file_dialog`. It is filtered to SQLite's extensions
+  (`.db`, `.db3`, `.sqlite`, `.sqlite3`, plus "All files" for a
+  database with no extension at all) and starts in the directory of the
+  database you already have open.
+- **Open database…** (or **Ctrl+O**) is the built-in picker: a path
+  field and a listing of the directory around it.
+
+The picker is not a fallback nobody looked after. It is what still works
+where the system dialog does not — a browser has no filesystem paths at
+all, and a Wayland session with no desktop portal installed has no portal
+to ask. Every failure the dialog can report says so in the status line and
+points at the picker, rather than leaving a button that quietly does
+nothing.
+
+### How the dialog is tested
+
+A test build cannot click a native dialog, and glinlandui's test build
+selects a portable stub whose only answer is `error.Unsupported` — so the
+whole Browse path was unreachable past the call. The toolkit now ships a
+**scriptable dialog** (`glinlandui.file_dialog.fake`): install a `Fake` and
+the same three entry points answer from it. It is opt-in, so with nothing
+installed the behaviour is exactly the stub's, and `platform.zig` is
+untouched — the cross-platform parity contract still holds.
+
+`dialog.zig` resolves the backend it calls:
+
+```zig
+const backend = if (builtin.is_test) ui.file_dialog.fake else ui.file_dialog;
+```
+
+so production is the real backend on every host and a test drives the fake.
+The `Fake` also records what it was *asked* for — kind, title, starting
+folder, the whole filter list — so a test asserts the request and not only
+the answer. That is what catches a dialog opening in the wrong directory,
+or a filter list drifting from the picker's extension list.
+
+The e2e tests then click the real Browse button through the real host and
+assert on what the app did: which database is open, what the status line
+says, and what the frame draws. Writing them found a real bug —
+`browse()` returned a path borrowed from the `Selection` it frees on
+return, a use-after-free on every successful Browse.
 
 ### Cross-compiling
 
@@ -150,7 +198,7 @@ from the primitives, in `src/gui/`:
   than exact colours, so the palette can be retuned without rewriting
   tests.
 
-The GUI's 74 tests run headless — glinlandui's test build selects a
+The GUI's 135 tests run headless — glinlandui's test build selects a
 portable backend, and the Driver renders real frames, so widget wiring
 is verified with no display server on any platform.
 

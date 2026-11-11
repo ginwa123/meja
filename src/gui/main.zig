@@ -21,8 +21,10 @@
 //! ## Layout
 //!
 //!   +------------------+--------------------------------+
-//!   | schema tree      | SQL editor (grows with content)|
-//!   | (fixed width)    +--------------------------------+
+//!   | open database    | picker (only when open)        |
+//!   | schema tree      +--------------------------------+
+//!   | (fixed width)    | SQL editor (grows with content)|
+//!   |                  +--------------------------------+
 //!   |                  | result grid (scrolls)          |
 //!   +------------------+--------------------------------+
 
@@ -51,6 +53,8 @@ const app_mod = @import("app.zig");
 const App = app_mod.App;
 const editor = @import("editor.zig");
 const grid = @import("grid.zig");
+const picker_mod = @import("picker.zig");
+const dialog = @import("dialog.zig");
 const theme = @import("theme.zig");
 
 // ---------------------------------------------------------------------------
@@ -122,9 +126,39 @@ fn sidebarChildren(self: *App) void {
         .color = theme.text_dim,
     });
 
+    // Always present, not only when nothing is open. A control that
+    // appears and disappears is how a "switch database" feature gets
+    // used exactly once.
+    button.button(.{
+        .id = "sidebar.open",
+        .label = if (self.picker.open) "Close picker" else "Open database…",
+        .font_size = theme.font_size_small,
+        .bg = theme.bg_selected,
+        .pad_tb = 4,
+        .pad_lr = 10,
+        .on_click = onSidebarOpenClick,
+        .ctx = self,
+    });
+
+    // The SYSTEM dialog, beside the built-in picker rather than instead of
+    // it. On a desktop this is the button people reach for — it is the
+    // dialog their operating system already taught them — and the picker
+    // below is what still works when there is no system dialog, which is
+    // every GUI test run and every browser.
+    button.button(.{
+        .id = "sidebar.browse",
+        .label = "Browse…",
+        .font_size = theme.font_size_small,
+        .bg = theme.bg_header,
+        .pad_tb = 4,
+        .pad_lr = 10,
+        .on_click = onSidebarBrowseClick,
+        .ctx = self,
+    });
+
     if (!self.db_open) {
         text_mod.label(.{
-            .str = "meja <database>",
+            .str = "Ctrl+O to choose one — or Browse…",
             .font_size = theme.font_size_small,
             .color = theme.text_faint,
         });
@@ -145,10 +179,11 @@ fn sidebarChildren(self: *App) void {
         tableRow(self, i);
     }
     if (self.tables.items.len > max_nodes) {
-        var buf: [64]u8 = undefined;
-        const more = std.fmt.bufPrint(&buf, "... and {d} more", .{
+        // Same rule as every other label: frame arena, not a local.
+        const buf = self.claimText(64);
+        const more = std.fmt.bufPrint(buf, "... and {d} more", .{
             self.tables.items.len - max_nodes,
-        }) catch "";
+        }) catch buf[0..0];
         text_mod.label(.{ .str = more, .color = theme.text_faint });
     }
 }
@@ -217,6 +252,22 @@ fn treeRowChildren(ctx: TreeRowCtx) void {
     }
 }
 
+fn onSidebarOpenClick(ctx: ?*anyopaque) void {
+    const self: *App = @ptrCast(@alignCast(ctx.?));
+    if (self.picker.open) self.closePicker() else self.openPicker();
+}
+
+/// The system file dialog. It BLOCKS — a file dialog is modal on every
+/// platform, AppKit and COM and the XDG portal alike — so this handler
+/// does not return until the user answers, and the window is frozen for
+/// the duration. That is the platform's behaviour, not a bug here, and it
+/// is why `App.browseForDatabase` always leaves a status line behind:
+/// the next frame has to say what happened.
+fn onSidebarBrowseClick(ctx: ?*anyopaque) void {
+    const self: *App = @ptrCast(@alignCast(ctx.?));
+    self.browseForDatabase();
+}
+
 fn onTreeRowClick(ctx: ?*anyopaque, index: usize) void {
     const self: *App = @ptrCast(@alignCast(ctx.?));
     self.browseTable(index);
@@ -242,8 +293,235 @@ fn rightPane(self: *App) void {
 }
 
 fn rightPaneChildren(self: *App) void {
+    // The picker is a band across the top, not a modal: it pushes the
+    // editor and grid down rather than covering them, so SQL written
+    // before is still visible and still editable while a database is
+    // being chosen.
+    if (self.picker.open) pickerPane(self);
     editorPane(self);
     resultPane(self);
+}
+
+// ---------------------------------------------------------------------------
+// The database picker
+// ---------------------------------------------------------------------------
+//
+// Built from what glinlandui has: a text field, three buttons, and one
+// clickable box per row.
+//
+// It is NOT the only way to open a database. glinlandui has a
+// `file_dialog` — the XDG portal, `NSOpenPanel`, `IFileDialog` — and the
+// Browse buttons above reach it. The picker remains because it is the
+// path that works everywhere the system dialog does not (a browser, a
+// Wayland session with no desktop portal) and because it is what the GUI
+// tests can drive at all: a test cannot click a native dialog.
+
+/// Rows drawn in the listing. The click registry caps at 256 entries
+/// per frame and the sidebar tree already spends some of that, so the
+/// listing states its own bound rather than discovering it.
+const max_picker_rows: usize = 8;
+
+fn pickerPane(self: *App) void {
+    const rows = @min(self.picker.entries.items.len, max_picker_rows);
+    const height = 64 +
+        @as(f32, @floatFromInt(rows)) * @as(f32, @floatFromInt(theme.row_height)) +
+        8;
+
+    box_mod.box(.{
+        .id = "picker",
+        .w = .grow,
+        .h = .{ .fixed = height },
+        .direction = .column,
+        .bg = theme.bg_header,
+        .pad = 8,
+        .gap = 6,
+    }, self, pickerPaneChildren);
+}
+
+fn pickerPaneChildren(self: *App) void {
+    // Title + the directory being listed. The directory is the one
+    // string that tells the user where the rows below came from.
+    box_mod.box(.{
+        .id = "picker.head",
+        .w = .grow,
+        .h = .{ .fixed = 18 },
+        .direction = .row,
+        .gap = 8,
+    }, self, pickerHeadChildren);
+
+    // The path field and its two buttons share a row.
+    box_mod.box(.{
+        .id = "picker.bar",
+        .w = .grow,
+        .h = .{ .fixed = 30 },
+        .direction = .row,
+        .gap = 8,
+    }, self, pickerBarChildren);
+
+    if (self.picker.error_message) |err| {
+        const buf = self.claimText(64);
+        const shown = std.fmt.bufPrint(buf, "cannot read directory: {s}", .{err}) catch buf[0..0];
+        text_mod.label(.{ .str = shown, .font_size = theme.font_size_small, .color = theme.danger });
+        return;
+    }
+
+    if (self.picker.entries.items.len == 0) {
+        text_mod.label(.{
+            .str = "no databases here — type a path above",
+            .font_size = theme.font_size_small,
+            .color = theme.text_faint,
+        });
+        return;
+    }
+
+    const count = @min(self.picker.entries.items.len, max_picker_rows);
+    for (0..count) |i| pickerRow(self, i);
+    if (self.picker.entries.items.len > count) {
+        const buf = self.claimText(64);
+        const more = std.fmt.bufPrint(buf, "... and {d} more", .{
+            self.picker.entries.items.len - count,
+        }) catch buf[0..0];
+        text_mod.label(.{ .str = more, .font_size = theme.font_size_small, .color = theme.text_faint });
+    }
+}
+
+fn pickerHeadChildren(self: *App) void {
+    text_mod.label(.{ .str = "Open database", .font_size = theme.font_size_small, .color = theme.text_bright });
+    // `db_path` is App-owned storage, so this label is safe the way a
+    // local buffer is not.
+    text_mod.label(.{ .str = self.picker.dir(), .font_size = theme.font_size_small, .color = theme.text_dim });
+}
+
+fn pickerBarChildren(self: *App) void {
+    // The editor's Caret maps straight onto glinlandui's EditState —
+    // same offset, same anchor — so the field draws its caret and
+    // selection without a second representation to keep in step.
+    input_mod.fieldEdit(.{
+        .id = "picker.path",
+        .font_size = theme.font_size,
+        .fg = theme.text,
+        .bg = theme.bg_editor,
+        .sel_fg = theme.bg_selected,
+        .w = 520,
+        .h = 30,
+        .pad_tb = 4,
+        .pad_lr = 8,
+    }, self.picker.field.text(), .{
+        .caret = @min(self.picker.field.caret.offset, self.picker.field.len),
+        .anchor = self.picker.field.caret.anchor,
+    });
+
+    // `button` registers its own click target when given `on_click`, so
+    // these need no click_registry call of their own.
+    button.button(.{
+        .id = "picker.open",
+        .label = "Open",
+        .font_size = theme.font_size,
+        .bg = theme.bg_selected,
+        .pad_tb = 5,
+        .pad_lr = 14,
+        .on_click = onOpenButtonClick,
+        .ctx = self,
+    });
+    // The same dialog as the sidebar's Browse, from inside the picker: a
+    // user who has opened the listing to find a database should not have to
+    // close it again to reach the dialog they actually wanted.
+    button.button(.{
+        .id = "picker.browse",
+        .label = "Browse…",
+        .font_size = theme.font_size,
+        .bg = theme.bg_header,
+        .pad_tb = 5,
+        .pad_lr = 14,
+        .on_click = onPickerBrowseClick,
+        .ctx = self,
+    });
+    button.button(.{
+        .id = "picker.cancel",
+        .label = "Cancel",
+        .font_size = theme.font_size,
+        .pad_tb = 5,
+        .pad_lr = 14,
+        .on_click = onCancelButtonClick,
+        .ctx = self,
+    });
+}
+
+/// Context for one listing row: which row, in which picker.
+const PickerRowCtx = struct {
+    app: *App,
+    index: usize,
+};
+
+fn pickerRow(app: *App, index: usize) void {
+    const ctx = PickerRowCtx{ .app = app, .index = index };
+    const selected = app.picker.cursor == index;
+    box_mod.box(.{
+        .id = pickerRowId(index),
+        .w = .grow,
+        .h = .{ .fixed = @floatFromInt(theme.row_height) },
+        .direction = .row,
+        .gap = 6,
+        .pad = 2,
+        .bg = if (selected) theme.bg_selected else theme.bg_header,
+        .radius = 3,
+    }, ctx, pickerRowChildren);
+
+    registry.registerZCursor(
+        ui.zclay.getElementId(pickerRowId(index)),
+        onPickerRowClick,
+        app,
+        index,
+        0,
+        .pointer,
+    );
+}
+
+fn pickerRowChildren(ctx: PickerRowCtx) void {
+    const self = ctx.app;
+    if (ctx.index >= self.picker.entries.items.len) return;
+    const entry = self.picker.entries.items[ctx.index];
+    const selected = self.picker.cursor == ctx.index;
+
+    // A trailing slash is the only marker a directory needs, and it is
+    // one the eye reads without a legend.
+    text_mod.label(.{
+        .str = if (entry.is_dir) "/" else " ",
+        .font_size = theme.font_size_small,
+        .color = theme.text_faint,
+    });
+    text_mod.label(.{
+        .str = entry.name,
+        .font_size = theme.font_size_small,
+        .color = if (selected) theme.text_bright else theme.text,
+    });
+}
+
+fn pickerRowId(index: usize) []const u8 {
+    // Same reasoning as treeRowId: an index keeps the id short and
+    // fixed-size, where a file name would be unbounded.
+    var buf: [24]u8 = undefined;
+    return std.fmt.bufPrint(&buf, "picker.row.{d}", .{index}) catch "picker.row";
+}
+
+fn onPickerRowClick(ctx: ?*anyopaque, index: usize) void {
+    const self: *App = @ptrCast(@alignCast(ctx.?));
+    self.activateCandidate(index);
+}
+
+fn onOpenButtonClick(ctx: ?*anyopaque) void {
+    const self: *App = @ptrCast(@alignCast(ctx.?));
+    self.openTypedPath();
+}
+
+fn onPickerBrowseClick(ctx: ?*anyopaque) void {
+    const self: *App = @ptrCast(@alignCast(ctx.?));
+    self.browseForDatabase();
+}
+
+fn onCancelButtonClick(ctx: ?*anyopaque) void {
+    const self: *App = @ptrCast(@alignCast(ctx.?));
+    self.closePicker();
 }
 
 fn editorPane(self: *App) void {
@@ -275,19 +553,37 @@ fn editorPaneChildren(self: *App) void {
     }
 }
 
+/// Longest editor line drawn in one piece. The buffer holds 16 KB but
+/// the pane is not that wide, so drawing the whole of a pathological
+/// line would cost a label nothing can see.
+const max_line_bytes: usize = 1024;
+
 fn editorLine(self: *App, line: usize, has_caret: bool) void {
     const start = self.ed.lineStartAt(line);
     var end = start;
     while (end < self.ed.len and self.ed.buf[end] != '\n') end += 1;
     const text = self.ed.buf[start..end];
 
-    var buf: [1024]u8 = undefined;
     const caret_at: ?usize = if (has_caret and self.ed.caret.offset >= start and
         self.ed.caret.offset <= end)
         self.ed.caret.offset - start
     else
         null;
-    const shown = editor.renderLineWithCaret(text, caret_at, &buf);
+
+    // NOT a local buffer, and this is the whole "typing does nothing"
+    // bug. `text.label` is immediate mode: it stores the pointer it is
+    // given and the rasteriser reads it later in the frame, after this
+    // function has returned. A `var buf` on the stack is dead by then,
+    // so every character the user typed was rendered from freed stack
+    // and the editor looked permanently blank -- while the buffer, the
+    // query engine and the results were all correct.
+    //
+    // `claimText` is the frame arena the rest of the file already uses
+    // for exactly this reason; the editor lines were the one place that
+    // was missed. One byte more than the line, for the caret.
+    const cap = @min(text.len + 1, max_line_bytes);
+    const buf = self.claimText(cap);
+    const shown = editor.renderLineWithCaret(text, caret_at, buf);
 
     text_mod.label(.{
         .str = shown,
@@ -481,8 +777,11 @@ pub fn main(init: std.process.Init) !void {
     if (argv.len > 1) {
         app.open(argv[1]);
     } else {
+        // In-memory rather than an error, so the window is never dead on
+        // arrival — but the picker is offered immediately, because
+        // "no database" with no way to fix it is the bug this replaced.
         app.open(":memory:");
-        app.status = "no database — pass a path to browse one";
+        app.setStatus("no database open — Ctrl+O to choose one", .{});
     }
 
     var host = try ui.host.Host.init(gpa, &app, App_root_wrapper);
@@ -505,14 +804,31 @@ fn App_root_wrapper(ctx: ?*anyopaque, w: u32, h: u32) void {
     root(ctx, w, h);
 }
 
+/// Adapter between the app's key handler and the window delegate.
+///
+/// The return value is **close intent, not "key consumed"**. The Wayland
+/// backend does this:
+///
+///     if (d.on_key(d.ptr, keymap.toEvdev(key), state == 1)) win.quit = true;
+///
+/// so returning `true` closes the window. An earlier version forwarded
+/// the app's "I handled this key" boolean straight through, which meant
+/// the first character typed shut the app down — the editor reported an
+/// edit, that is a `true`, and that is a close request.
+///
+/// So: everything the app consumes returns `false`, and only an explicit
+/// Escape asks the window to close.
 fn App_key_wrapper(ctx: ?*anyopaque, mods: input_mod.Mods, keycode: u32) bool {
     const self: *App = @ptrCast(@alignCast(ctx.?));
-    return self.onKey(mods, keycode);
+    _ = self.onKey(mods, keycode);
+    return ui.keyToClose(keycode);
 }
 
 test {
     _ = editor;
     _ = grid;
+    _ = picker_mod;
     _ = theme;
+    _ = dialog;
     _ = @import("e2e_test.zig");
 }

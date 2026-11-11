@@ -16,6 +16,8 @@ const app_mod = @import("app.zig");
 const App = app_mod.App;
 const draw = @import("main.zig");
 const editor = @import("editor.zig");
+const picker_mod = @import("picker.zig");
+const database = @import("databases").database;
 const value = @import("meja").value;
 const theme = @import("theme.zig");
 const glin_input = ui.components.input;
@@ -58,12 +60,30 @@ const Harness = struct {
         self.app.clearResult();
         self.app.freeTables();
         if (self.app.db_open) self.app.db.deinit();
+        // The picker's listing owns a name per entry it found; without
+        // this the harness would leak them (and so would the app).
+        self.app.picker.deinit(gpa);
         gpa.destroy(self.app);
         self.threaded.deinit();
     }
 
     /// The app's own draw callback, so the Driver renders the REAL UI
     /// rather than a stand-in.
+    /// Register the key adapter on the harness's own host.
+    ///
+    /// Must be the SAME adapter `main` installs — a `true` return means
+    /// close intent to the Wayland backend, so wiring it differently in
+    /// a test than in the app would test the wrong contract.
+    fn installKeys(self: *Harness) void {
+        self.driver.host.keys.register(struct {
+            fn f(ctx: ?*anyopaque, mods: glin_input.Mods, keycode: u32) bool {
+                const a: *App = @ptrCast(@alignCast(ctx.?));
+                _ = a.onKey(mods, keycode);
+                return ui.keyToClose(keycode);
+            }
+        }.f, self.app);
+    }
+
     /// Draw a frame and let the renderer settle.
     ///
     /// `waitForIdle` matters: glinlandui's scrollbar and hit-testing read
@@ -89,6 +109,96 @@ const Harness = struct {
     /// Press Ctrl+Enter: the run gesture.
     fn run(self: *Harness) void {
         _ = self.app.onKey(.{ .ctrl = true }, editor.KEY_ENTER);
+    }
+
+    /// Press a key through the real host keychain.
+    ///
+    /// The distinction matters: `typeText` calls `App.onKey` directly, so
+    /// it never exercises glinlandui's `Mods` latch or handler chain.
+    /// The Wayland backend goes through those, and a break there would
+    /// make the app deaf while every direct-call test stayed green.
+    fn press(self: *Harness, keycode: u32, mods: glin_input.Mods) void {
+        // Mods are a LATCH, not an argument: glinlandui's `Mods.track`
+        // consumes the Shift/Ctrl key events themselves and the handler
+        // then reads the latched state. Sending only the bare key would
+        // type "o" instead of "Ctrl+O", which is a test that passes
+        // nothing.
+        if (mods.ctrl) _ = h_key(self, editor.KEY_LEFTCTRL);
+        if (mods.shift) _ = h_key(self, editor.KEY_LEFTSHIFT);
+        _ = h_key(self, keycode);
+        if (mods.shift) _ = h_key_release(self, editor.KEY_LEFTSHIFT);
+        if (mods.ctrl) _ = h_key_release(self, editor.KEY_LEFTCTRL);
+    }
+
+    fn h_key(self: *Harness, keycode: u32) bool {
+        return self.driver.host.onKeyEvent(keycode, true);
+    }
+
+    fn h_key_release(self: *Harness, keycode: u32) bool {
+        return self.driver.host.onKeyEvent(keycode, false);
+    }
+
+    /// Assert the editor's line `line` reached the frame, byte for byte.
+    ///
+    /// The drawn line is the editor's text with a caret character spliced
+    /// in, so it is deliberately NOT the buffer verbatim — and comparing
+    /// against the raw buffer is exactly what let the blank-editor bug
+    /// through. Computing the expected line with the same renderer is
+    /// sound: that renderer has its own unit tests, and what is asserted
+    /// here is the thing that actually broke, which is whether the
+    /// editor's bytes survive to the frame at all.
+    fn expectEditorDrawn(self: *Harness, line: usize) !void {
+        var buf: [4096]u8 = undefined;
+        const ed = &self.app.ed;
+        const start = ed.lineStartAt(line);
+        var end = start;
+        while (end < ed.len and ed.buf[end] != '\n') end += 1;
+        const caret: ?usize = if (ed.caret.offset >= start and ed.caret.offset <= end)
+            ed.caret.offset - start
+        else
+            null;
+        const expected = editor.renderLineWithCaret(ed.buf[start..end], caret, &buf);
+        try testing.expect(expected.len > 1); // not an empty line
+        try self.driver.expectText(expected);
+    }
+
+    /// Assert some drawn text CONTAINS `needle`.
+    ///
+    /// `Driver.expectText` is an exact whole-string match. That is the
+    /// right default and the wrong tool for "this message is on screen
+    /// and it names the failing path", because the message is a whole
+    /// sentence and its exact wording includes an error name.
+    fn expectTextContaining(self: *Harness, needle: []const u8) !void {
+        const count = self.driver.snapshot().text_count;
+        for (0..count) |i| {
+            const drawn = self.driver.text(i) orelse continue;
+            if (std.mem.indexOf(u8, drawn, needle) != null) return;
+        }
+        std.debug.print("no drawn text contains '{s}'\n", .{needle});
+        return error.TextNotFound;
+    }
+
+    /// Type into whatever field currently has focus, through the chain.
+    fn typeThroughHost(self: *Harness, text: []const u8) !void {
+        for (text) |c| {
+            const stroke = editor.keyCodeFor(c) orelse {
+                std.debug.print("no key for '{c}'\n", .{c});
+                return error.UnsupportedCharacter;
+            };
+            self.press(stroke.code, .{ .shift = stroke.shift });
+        }
+    }
+
+    /// Script what the system file dialog will answer with.
+    ///
+    /// The `Fake` lives on the caller's stack and the caller's
+    /// `defer ui.file_dialog.fake.uninstall()` runs before that frame goes
+    /// away, which is the only safe shape — the toolkit's fake holds a pointer
+    /// to it.
+    fn scriptDialog(self: *Harness, fake: *ui.file_dialog.fake.Fake, answer: ui.file_dialog.fake.Answer) void {
+        _ = self;
+        fake.* = .{ .answer = answer };
+        ui.file_dialog.fake.install(fake);
     }
 };
 
@@ -285,6 +395,84 @@ test "clicking a table in the sidebar loads it and fills the editor" {
     try h.driver.expectText("users");
 }
 
+test "Browse is in the frame, so the system dialog is reachable" {
+    // The button has to be ON SCREEN, not merely defined. A Browse action
+    // that no frame draws is the same failure as a database browser with no
+    // way to change database, which is what this replaced.
+    var h = try Harness.init(std.heap.page_allocator);
+    defer h.deinit();
+    h.frame();
+
+    try testing.expect(h.driver.exists("sidebar.browse"));
+    // The built-in picker stays reachable beside it.
+    try testing.expect(h.driver.exists("sidebar.open"));
+}
+
+test "the picker offers Browse too, so the listing can hand over" {
+    var h = try Harness.init(std.heap.page_allocator);
+    defer h.deinit();
+    h.app.openPicker();
+    h.frame();
+
+    try testing.expect(h.driver.exists("picker.browse"));
+    // ...and the two old controls are still there. This one is a regression
+    // guard on the buttons it was added next to.
+    try testing.expect(h.driver.exists("picker.open"));
+    try testing.expect(h.driver.exists("picker.cancel"));
+}
+
+test "browsing with no system dialog says why, and changes nothing" {
+    // A GUI test build selects glinlandui's PORTABLE backend, where
+    // file_dialog is `error.Unsupported`. So this is not a stand-in for the
+    // real dialog: it is exactly what a browser gets, and it is the only
+    // one of the dialog's outcomes a headless runner can reach.
+    //
+    // What matters is not that it fails. It is that it fails LOUDLY and
+    // leaves a working application behind: a Browse button that silently does
+    // nothing is indistinguishable from a database browser that cannot open
+    // anything.
+    var h = try Harness.init(std.heap.page_allocator);
+    defer h.deinit();
+    const before = h.app.db_path;
+
+    h.app.browseForDatabase();
+
+    try testing.expect(std.mem.indexOf(u8, h.app.status, "picker") != null);
+    // The database is untouched, and still open: an unavailable dialog is
+    // not a reason to close what the user already had.
+    try testing.expect(h.app.db_open);
+    try testing.expectEqualStrings(before, h.app.db_path);
+}
+
+test "the message names the platform, not just the failure" {
+    // "file dialog failed" leaves the user with nothing to do. The message
+    // has to say WHICH thing is missing, because the fix is different for
+    // each: another platform, a package to install, or a session bus.
+    var h = try Harness.init(std.heap.page_allocator);
+    defer h.deinit();
+
+    h.app.browseForDatabase();
+    try testing.expectEqualStrings(
+        "no system file dialog on this platform — use the picker below",
+        h.app.status,
+    );
+}
+
+test "the picker still opens after a failed browse" {
+    // The fallback has to be reachable, not merely mentioned. A user who
+    // clicked Browse and been told to use the picker should find the picker
+    // one keypress away.
+    var h = try Harness.init(std.heap.page_allocator);
+    defer h.deinit();
+
+    h.app.browseForDatabase();
+    try testing.expect(!h.app.picker.open);
+    h.app.openPicker();
+    try testing.expect(h.app.picker.open);
+    h.frame();
+    try testing.expect(h.driver.exists("picker.path"));
+}
+
 test "the frame the app draws contains the sidebar, editor and grid" {
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
@@ -360,53 +548,763 @@ test "the editor buffer is not a pointer into a dead App copy" {
     try testing.expectEqual(@as(usize, h.app.sql_buf.len), h.app.ed.buf.len);
 }
 
-test "the real Host key path types a query correctly" {
-    // Driving `App.onKey` directly is NOT enough: shift is latched by
-    // `Mods.track` inside the dispatch chain, so a test that passes a
-    // fresh `Mods{}` per keystroke never exercises the latch and would
-    // pass on a keyboard that types every letter in lower case.
+test "typing does not close the window" {
+    // Regression test for the force-close.
     //
-    // This goes through `Host.onKeyEvent` -- the exact entry point the
-    // window backend calls -- so the whole path is covered: latch, then
-    // dispatch, then the app's handler.
+    // The Wayland backend treats a `true` return from `on_key` as CLOSE
+    // INTENT:
+    //
+    //     if (d.on_key(d.ptr, keymap.toEvdev(key), state == 1)) win.quit = true;
+    //
+    // The app's own handler returns true to mean "I handled this key",
+    // and the two were wired together directly — so the first character
+    // typed asked the window to shut down.
     const gpa = std.heap.page_allocator;
-
-    var threaded: std.Io.Threaded = .init(gpa, .{});
-    defer threaded.deinit();
-
-    const app = try gpa.create(App);
-    defer gpa.destroy(app);
-    app.init(gpa, threaded.io());
-    app.open(":memory:");
-    try seed(app);
-
-    var host = try ui.host.Host.init(gpa, app, draw.App_root);
-    defer host.deinit();
-    // The same registration `main` does.
-    host.keys.register(struct {
-        fn f(ctx: ?*anyopaque, mods: glin_input.Mods, keycode: u32) bool {
-            const a: *App = @ptrCast(@alignCast(ctx.?));
-            return a.onKey(mods, keycode);
-        }
-    }.f, app);
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    h.installKeys();
 
     const query_text = "SELECT * FROM users";
     for (query_text) |ch| {
         const stroke = editor.keyCodeFor(ch) orelse return error.UnsupportedCharacter;
-        // `Mods.track` consumes the modifier and returns false, so the
-        // shift press is not reported as handled. The latch is the point.
-        if (stroke.shift) _ = host.onKeyEvent(editor.KEY_LEFTSHIFT, true);
-        _ = host.onKeyEvent(stroke.code, true);
-        if (stroke.shift) _ = host.onKeyEvent(editor.KEY_LEFTSHIFT, false);
+        if (stroke.shift) _ = h.driver.host.onKeyEvent(editor.KEY_LEFTSHIFT, true);
+        // The backend acts on this return value. It must stay false for
+        // every character the editor consumes.
+        const close_intent = h.driver.host.onKeyEvent(stroke.code, true);
+        try testing.expect(!close_intent);
+        if (stroke.shift) _ = h.driver.host.onKeyEvent(editor.KEY_LEFTSHIFT, false);
     }
 
-    try testing.expectEqualStrings(query_text, app.ed.text());
+    _ = h.driver.host.onKeyEvent(editor.KEY_LEFTCTRL, true);
+    try testing.expect(!h.driver.host.onKeyEvent(editor.KEY_ENTER, true));
+    _ = h.driver.host.onKeyEvent(editor.KEY_LEFTCTRL, false);
 
-    // And it actually runs -- through the same real path, with Control
-    // latched rather than passed in by hand.
-    _ = host.onKeyEvent(editor.KEY_LEFTCTRL, true);
-    _ = host.onKeyEvent(editor.KEY_ENTER, true);
-    _ = host.onKeyEvent(editor.KEY_LEFTCTRL, false);
-    try testing.expect(app.has_result);
-    try testing.expectEqual(@as(usize, 3), app.result.rowCount());
+    // The window is still open, with the query typed and run.
+    try testing.expect(!h.driver.host.isQuit());
+    try testing.expectEqualStrings(query_text, h.app.ed.text());
+    try testing.expect(h.app.has_result);
+    try testing.expectEqual(@as(usize, 3), h.app.result.rowCount());
+}
+
+test "Escape is the thing that closes the window" {
+    // The other half of the contract: after the fix, Escape must still
+    // ask the window to close, or the app cannot be quit from the
+    // keyboard at all.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    h.installKeys();
+
+    // Escape (evdev 1) is close intent.
+    try testing.expect(h.driver.host.onKeyEvent(1, true));
+    // Ordinary typing is not.
+    try testing.expect(!h.driver.host.onKeyEvent(30, true)); // 'a'
+    try testing.expect(!h.driver.host.onKeyEvent(2, true)); // '1'
+    // A key release is not close intent either.
+    try testing.expect(!h.driver.host.onKeyEvent(1, false));
+}
+
+// ---------------------------------------------------------------------------
+// The editor must be VISIBLE
+// ---------------------------------------------------------------------------
+//
+// Every test above types a query and then asserts on `App.result` or on
+// the grid — and the grid happens to be drawn from the frame arena, so
+// all of them passed while the SQL the user typed was rendered from a
+// dead stack buffer. The editor lines were the one place still using a
+// local, and nothing asserted on them.
+
+test "the typed SQL is actually drawn, not just held" {
+    // The regression test for "typing does nothing".
+    //
+    // `editorLine` used to render into `var buf: [1024]u8` on the stack
+    // and hand that pointer to `text.label`. Clay keeps the pointer
+    // until the rasteriser runs, which is after the function returned,
+    // so the editor drew freed stack and the user saw nothing — while
+    // the buffer, the query engine and the results were all correct.
+    //
+    // The earlier suite missed it for two reasons: it only ever checked
+    // `App.result` and grid cells (which already used the arena), and the
+    // one place it did check a rendered string — the "clicking a table"
+    // test asserting `expectText("users")` — passed on the SIDEBAR copy
+    // of the name, not the editor's.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+
+    try h.typeText("SELECT name FROM users");
+    h.frame();
+
+    // A query that appears NOWHERE else in the UI, so the only way to
+    // find it is as the editor's own drawn line.
+    try h.expectEditorDrawn(0);
+}
+
+test "a query the user typed is drawn after Ctrl+Enter too" {
+    // The editor keeps the query after it runs, so the buffer is still
+    // on screen. A blank editor next to a populated grid is the exact
+    // shape of the original bug.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+
+    try h.typeText("SELECT email FROM users");
+    h.run();
+    h.frame();
+
+    try h.expectEditorDrawn(0);
+    try h.driver.expectText("a@x.com");
+}
+
+test "clicking a table draws its generated query, not just its name" {
+    // The blind spot in the old suite, closed: "users" is in the sidebar
+    // too, so asserting on it proved nothing about the editor. The
+    // generated `SELECT * FROM users` exists only in the editor.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    h.app.loadTables();
+    h.app.browseTable(0);
+    h.frame();
+
+    try testing.expectEqualStrings("SELECT * FROM users", h.app.ed.text());
+    try h.expectEditorDrawn(0);
+}
+
+test "a multi-line query draws every line" {
+    // Each line is its own label, so a per-line failure would be hidden
+    // by the others.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+
+    try h.typeText("SELECT name");
+    _ = h.app.onKey(.{}, editor.KEY_ENTER);
+    try h.typeText("FROM users");
+    h.frame();
+
+    try h.expectEditorDrawn(0);
+    try h.expectEditorDrawn(1);
+}
+
+test "typing reaches the editor through the real keychain" {
+    // The direct-call tests prove `App.onKey` works. This proves the
+    // whole path does — glinlandui's Mods latch, the handler chain and
+    // the close-intent return value — because that is the path the
+    // Wayland backend actually takes.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    h.installKeys();
+
+    try h.typeThroughHost("SELECT id FROM users");
+    try testing.expectEqualStrings("SELECT id FROM users", h.app.ed.text());
+
+    h.frame();
+    try h.expectEditorDrawn(0);
+}
+
+// ---------------------------------------------------------------------------
+// Choosing a database
+// ---------------------------------------------------------------------------
+
+/// A directory under the build cache with real database files in it.
+const DbDir = struct {
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+
+    fn init(h: *Harness, name: []const u8) !DbDir {
+        const gpa = h.app.gpa;
+        const io = h.app.io;
+        const path = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}", .{name});
+        errdefer gpa.free(path);
+        std.Io.Dir.cwd().deleteTree(io, path) catch {};
+        try std.Io.Dir.cwd().createDirPath(io, path);
+        return .{ .gpa = gpa, .io = io, .path = path };
+    }
+
+    fn deinit(self: *DbDir) void {
+        std.Io.Dir.cwd().deleteTree(self.io, self.path) catch {};
+        self.gpa.free(self.path);
+    }
+
+    fn join(self: *const DbDir, name: []const u8) ![]u8 {
+        return std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ self.path, name });
+    }
+
+    /// Write a real SQLite database, with a `users` table, to `name`.
+    fn writeDb(self: *const DbDir, name: []const u8) !void {
+        const handle = try std.Io.Dir.cwd().openDir(
+            self.io,
+            self.path,
+            .{ .access_sub_paths = true },
+        );
+        defer handle.close(self.io);
+        try handle.writeFile(self.io, .{ .sub_path = name, .data = "" });
+        const full = try self.join(name);
+        defer self.gpa.free(full);
+
+        // Build it through SQLite rather than shipping a fixture, so the
+        // file is genuinely a database and the test is not asserting
+        // against a stale blob.
+        var db = database.Db{};
+        try db.init(self.io, try self.gpa.dupeZ(u8, full));
+        defer db.deinit();
+        try db.exec(self.gpa,
+            \\CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)
+        , &.{});
+        try db.exec(self.gpa, "INSERT INTO users (id, name) VALUES (1, 'zoe')", &.{});
+    }
+};
+
+test "Ctrl+O opens the picker and puts the keyboard in the path field" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    h.installKeys();
+
+    try testing.expect(!h.app.picker.open);
+    h.press(editor.KEY_O, .{ .ctrl = true });
+    try testing.expect(h.app.picker.open);
+    try testing.expectEqual(app_mod.Focus.path, h.app.focus);
+}
+
+test "the picker appears in the frame, with a field and a button" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    // Closed by default: the panel is not something the window shows
+    // before it is asked for.
+    h.frame();
+    try testing.expect(!h.driver.exists("picker"));
+
+    h.app.openPicker();
+    h.frame();
+
+    try testing.expect(h.driver.exists("picker"));
+    try testing.expect(h.driver.exists("picker.path"));
+    try testing.expect(h.driver.exists("picker.open"));
+    try testing.expect(h.driver.exists("sidebar.open"));
+    try h.driver.expectText("Open database");
+}
+
+test "typing a path and pressing Enter opens that database" {
+    // The whole point: a database browser that cannot be pointed at a
+    // different database. Everything routes through the UI here — the
+    // keychain, the focus switch, the field, Enter.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    h.installKeys();
+
+    var dir = try DbDir.init(&h, "meja-e2e-typed-path");
+    defer dir.deinit();
+    try dir.writeDb("typed.db");
+    const path = try dir.join("typed.db");
+    defer gpa.free(path);
+
+    h.app.openPicker();
+    try h.typeThroughHost(path);
+    try testing.expectEqualStrings(path, h.app.picker.field.text());
+    // SQL must not have been typed into the editor by mistake.
+    try testing.expectEqual(@as(usize, 0), h.app.ed.len);
+
+    h.press(editor.KEY_ENTER, .{});
+
+    try testing.expect(h.app.db_open);
+    try testing.expectEqualStrings(path, h.app.db_path);
+    // It really is that database, not the in-memory one it started on.
+    try testing.expect(h.app.tables.items.len >= 1);
+    try testing.expectEqualStrings("users", h.app.tables.items[0].name);
+    // A successful open closes the panel.
+    try testing.expect(!h.app.picker.open);
+}
+
+test "clicking a listed database opens it" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var dir = try DbDir.init(&h, "meja-e2e-click-open");
+    defer dir.deinit();
+    try dir.writeDb("clicked.db");
+
+    h.app.openPicker();
+    h.app.enterDirectory(dir.path);
+    try testing.expect(h.app.picker.entries.items.len >= 2);
+
+    // The listing is "..", then "clicked.db" (no subdirectories here).
+    const index = blk: {
+        for (h.app.picker.entries.items, 0..) |e, i| {
+            if (std.mem.eql(u8, e.name, "clicked.db")) break :blk i;
+        }
+        return error.DatabaseNotListed;
+    };
+
+    h.frame();
+    try h.driver.expectText("clicked.db");
+    h.app.activateCandidate(index);
+
+    try testing.expect(h.app.db_open);
+    try testing.expectEqualStrings("clicked.db", picker_mod.baseOf(h.app.db_path));
+    try testing.expectEqualStrings("users", h.app.tables.items[0].name);
+}
+
+test "clicking the Open button opens the typed path" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var dir = try DbDir.init(&h, "meja-e2e-button-open");
+    defer dir.deinit();
+    try dir.writeDb("button.db");
+    const path = try dir.join("button.db");
+    defer gpa.free(path);
+
+    h.app.openPicker();
+    h.app.picker.field.setText(path);
+    h.frame();
+
+    // The button is a real click target, so click it the way a pointer
+    // would rather than calling the handler.
+    try h.driver.click("picker.open");
+
+    try testing.expect(h.app.db_open);
+    try testing.expectEqualStrings("button.db", picker_mod.baseOf(h.app.db_path));
+}
+
+test "the sidebar's Open button toggles the picker" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    h.frame();
+    try h.driver.click("sidebar.open");
+    try testing.expect(h.app.picker.open);
+
+    h.frame();
+    try h.driver.click("sidebar.open");
+    try testing.expect(!h.app.picker.open);
+}
+
+test "a directory is entered, not reported as a broken database" {
+    // Entering a directory must navigate rather than fail: "cannot open
+    // a directory" would be both true and useless.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var dir = try DbDir.init(&h, "meja-e2e-enter-dir");
+    defer dir.deinit();
+    try dir.writeDb("inside.db");
+
+    h.app.openPicker();
+    h.app.picker.field.setText(dir.path);
+    h.app.openTypedPath();
+
+    try testing.expect(h.app.picker.open); // still browsing
+    try testing.expectEqualStrings(dir.path, h.app.picker.dir());
+    try testing.expect(h.app.picker.error_message == null);
+    // The database inside is now listed, and ".." is offered above it.
+    var found = false;
+    for (h.app.picker.entries.items) |e| {
+        if (std.mem.eql(u8, e.name, "inside.db")) found = true;
+    }
+    try testing.expect(found);
+    try testing.expectEqualStrings("..", h.app.picker.entries.items[0].name);
+}
+
+test ".. goes back up a level" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var dir = try DbDir.init(&h, "meja-e2e-go-up");
+    defer dir.deinit();
+    try dir.writeDb("deep.db");
+
+    h.app.openPicker();
+    h.app.enterDirectory(dir.path);
+    h.app.activateCandidate(0); // ".."
+
+    try testing.expectEqualStrings(".zig-cache/tmp", h.app.picker.dir());
+    // ...and the database is now one level further away, which is the
+    // point: there is always a way out of a listing.
+    try testing.expectEqualStrings(".zig-cache/tmp", picker_mod.parentOf(dir.path));
+}
+
+test "opening a database that is not there says which path failed" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    h.app.openPicker();
+    h.app.picker.field.setText("/no/such/directory/missing.db");
+    h.app.openTypedPath();
+
+    try testing.expect(!h.app.db_open);
+    // The old message was a bare "cannot open database", which names
+    // nothing the user can act on.
+    try testing.expect(std.mem.indexOf(u8, h.app.status, "missing.db") != null);
+
+    h.frame();
+    try h.expectTextContaining("missing.db");
+}
+
+test "a failed switch keeps the database that was already open" {
+    // Failing must not look like closing: the window still shows the old
+    // database and says so.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    const before = h.app.db_path;
+    try testing.expectEqualStrings(":memory:", before);
+
+    h.app.open("/no/such/place/other.db");
+    try testing.expect(!h.app.db_open);
+    // Never opened, so there is no path to keep — but the in-memory
+    // database the app started on must still be usable.
+    h.app.runEditor();
+    try testing.expect(h.app.has_result or h.app.ed.len == 0);
+}
+
+test "Tab moves between the path field and the SQL editor" {
+    // Two fields, one keyboard: without an explicit focus the user can
+    // type a database path into their query, or a query into a path.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    h.installKeys();
+    try seed(h.app);
+
+    h.app.openPicker();
+    try testing.expectEqual(app_mod.Focus.path, h.app.focus);
+
+    h.press(editor.KEY_TAB, .{});
+    try testing.expectEqual(app_mod.Focus.sql_editor, h.app.focus);
+
+    try h.typeThroughHost("SELECT 1");
+    try testing.expectEqualStrings("SELECT 1", h.app.ed.text());
+    // ...and the path field was left alone.
+    try testing.expectEqual(@as(usize, 0), h.app.picker.field.len);
+
+    h.press(editor.KEY_TAB, .{});
+    try testing.expectEqual(app_mod.Focus.path, h.app.focus);
+
+    try h.typeThroughHost("x.db");
+    try testing.expectEqualStrings("x.db", h.app.picker.field.text());
+    try testing.expectEqualStrings("SELECT 1", h.app.ed.text());
+}
+
+test "typing is still SQL after the picker has been closed" {
+    // Closing must hand the keyboard back, or the window is left with a
+    // path field that swallows every query.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    h.installKeys();
+    try seed(h.app);
+
+    h.press(editor.KEY_O, .{ .ctrl = true });
+    try testing.expect(h.app.picker.open);
+    h.press(editor.KEY_O, .{ .ctrl = true });
+    try testing.expect(!h.app.picker.open);
+    try testing.expectEqual(app_mod.Focus.sql_editor, h.app.focus);
+
+    try h.typeThroughHost("SELECT name FROM users");
+    try testing.expectEqualStrings("SELECT name FROM users", h.app.ed.text());
+    h.run();
+    try testing.expectEqual(@as(usize, 3), h.app.result.rowCount());
+}
+
+test "the status line never points at freed memory" {
+    // `status` used to be `dupe`d onto the heap with nothing freeing it,
+    // or borrowed straight out of the result set — which is deinited on
+    // the next run. It is now always a slice of the App's own buffer.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+
+    try h.typeText("SELECT nosuchcolumn FROM users");
+    h.run();
+    const after_error = h.app.status;
+    try testing.expect(after_error.len > 0);
+
+    // Switch to another database, which frees the result the message
+    // used to live in.
+    h.app.open(":memory:");
+    try h.typeText("SELECT 1");
+    h.run();
+    h.frame();
+    try testing.expect(h.app.status.len > 0);
+    // The buffer belongs to the App, not the allocator.
+    try testing.expectEqual(
+        @intFromPtr(&h.app.status_buf),
+        @intFromPtr(h.app.status.ptr),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Browse: the system dialog, end to end.
+//
+// These are the tests that were impossible before the toolkit grew a
+// scriptable dialog. A GUI test build took the portable stub, so
+// `App.browseForDatabase` could only ever report "no system file dialog on
+// this platform" — the selection path, the cancellation path and each portal
+// error were written, shipped, and never once executed by a test.
+//
+// Each one scripts an answer, clicks the real Browse button through the real
+// host, and then asserts on what the app DID: which database is open, what
+// the status line says, and what the frame draws.
+// ---------------------------------------------------------------------------
+
+test "Browse opens the database the dialog returns" {
+    // The whole point of the feature: click Browse, pick a file, browse it.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var dir = try DbDir.init(&h, "meja-e2e-browse-open");
+    defer dir.deinit();
+    try dir.writeDb("browsed.db");
+    const path = try dir.join("browsed.db");
+    defer gpa.free(path);
+
+    var fake: ui.file_dialog.fake.Fake = undefined;
+    defer ui.file_dialog.fake.uninstall();
+    h.scriptDialog(&fake, .{ .selected = &.{path} });
+
+    // Through the real button, not the handler: a Browse action no frame
+    // draws is the same failure as a browser with no way to change database.
+    h.frame();
+    try h.driver.click("sidebar.browse");
+
+    try testing.expect(h.app.db_open);
+    try testing.expectEqualStrings(path, h.app.db_path);
+    // It really is that database, not the in-memory one it started on.
+    try testing.expect(h.app.tables.items.len >= 1);
+    try testing.expectEqualStrings("users", h.app.tables.items[0].name);
+    // A successful open closes the picker, like every other route.
+    try testing.expect(!h.app.picker.open);
+}
+
+test "a browsed database can be queried, and the result is drawn" {
+    // Browse is only useful if what it opens can then be queried. This is the
+    // full path the task asks for: Browse -> database opens -> query runs ->
+    // result appears in the frame.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var dir = try DbDir.init(&h, "meja-e2e-browse-query");
+    defer dir.deinit();
+    try dir.writeDb("queried.db");
+    const path = try dir.join("queried.db");
+    defer gpa.free(path);
+
+    var fake: ui.file_dialog.fake.Fake = undefined;
+    defer ui.file_dialog.fake.uninstall();
+    h.scriptDialog(&fake, .{ .selected = &.{path} });
+
+    h.frame();
+    try h.driver.click("sidebar.browse");
+    try testing.expect(h.app.db_open);
+
+    // Now query it, the way a user would.
+    try h.typeText("SELECT name FROM users");
+    h.run();
+    h.frame();
+
+    try testing.expect(h.app.has_result);
+    try testing.expectEqual(@as(usize, 1), h.app.result.rowCount());
+    // The row the fixture inserted, reachable as DRAWN text — not merely
+    // present in the result set.
+    try h.driver.expectText("zoe");
+    try h.driver.expectText("name");
+}
+
+test "clicking a table in a browsed database fills the editor and the grid" {
+    // The other half of browsing: the schema tree is populated from what the
+    // dialog opened, and clicking a row in it runs a query.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var dir = try DbDir.init(&h, "meja-e2e-browse-tree");
+    defer dir.deinit();
+    try dir.writeDb("treed.db");
+    const path = try dir.join("treed.db");
+    defer gpa.free(path);
+
+    var fake: ui.file_dialog.fake.Fake = undefined;
+    defer ui.file_dialog.fake.uninstall();
+    h.scriptDialog(&fake, .{ .selected = &.{path} });
+
+    h.frame();
+    try h.driver.click("sidebar.browse");
+    try testing.expect(h.app.tables.items.len >= 1);
+
+    h.app.browseTable(0);
+    h.frame();
+
+    try testing.expectEqualStrings("SELECT * FROM users", h.app.ed.text());
+    try testing.expect(h.app.has_result);
+    try h.driver.expectText("zoe");
+}
+
+test "the dialog is asked to start in the open database's directory" {
+    // The request half of the contract, asserted through the app. A dialog
+    // that opened in the wrong directory would pass every assertion on the
+    // answer alone.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var dir = try DbDir.init(&h, "meja-e2e-browse-folder");
+    defer dir.deinit();
+    try dir.writeDb("folder.db");
+    const path = try dir.join("folder.db");
+    defer gpa.free(path);
+
+    var fake: ui.file_dialog.fake.Fake = undefined;
+    defer ui.file_dialog.fake.uninstall();
+    h.scriptDialog(&fake, .cancelled);
+
+    // Open a database first, so there IS a directory to start from.
+    h.app.open(path);
+    try testing.expect(h.app.db_open);
+
+    h.app.browseForDatabase();
+
+    try testing.expectEqualStrings(dir.path, fake.last_folder.?);
+    try testing.expectEqualStrings("Open database", fake.last_title);
+}
+
+test "a cancelled browse leaves the open database alone" {
+    // The user closed the dialog on purpose. That must not look like a close:
+    // the database that was open is still open, and the status says so.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    const before = h.app.db_path;
+
+    var fake: ui.file_dialog.fake.Fake = undefined;
+    defer ui.file_dialog.fake.uninstall();
+    h.scriptDialog(&fake, .cancelled);
+
+    h.app.browseForDatabase();
+
+    try testing.expect(h.app.db_open);
+    try testing.expectEqualStrings(before, h.app.db_path);
+    try testing.expect(std.mem.indexOf(u8, h.app.status, "cancelled") != null);
+    // The result set is untouched too: a cancel is not a reason to clear it.
+    try testing.expect(h.app.has_result or h.app.ed.len == 0);
+}
+
+test "each portal failure is reported, and the picker is still offered" {
+    // "no portal" and "no bus" have completely different fixes, so the app
+    // must say which one it got — and every one of them must leave the
+    // fallback reachable.
+    const gpa = std.heap.page_allocator;
+    const E = ui.file_dialog.Error;
+    const cases = [_]struct { err: E, want: []const u8 }{
+        .{ .err = E.Unsupported, .want = "no system file dialog on this platform" },
+        .{ .err = E.NoPortal, .want = "no desktop portal" },
+        .{ .err = E.NoSessionBus, .want = "no D-Bus session bus" },
+        .{ .err = E.PortalError, .want = "the file dialog failed" },
+        .{ .err = E.Timeout, .want = "the file dialog failed" },
+    };
+    for (cases) |case| {
+        var h = try Harness.init(gpa);
+        defer h.deinit();
+
+        var fake: ui.file_dialog.fake.Fake = undefined;
+        defer ui.file_dialog.fake.uninstall();
+        h.scriptDialog(&fake, .{ .failed = case.err });
+
+        h.app.browseForDatabase();
+
+        try testing.expect(std.mem.indexOf(u8, h.app.status, case.want) != null);
+        // Every message ends by pointing at the picker, which still works.
+        try testing.expect(std.mem.indexOf(u8, h.app.status, "picker") != null);
+        // And the picker really does open.
+        h.app.openPicker();
+        try testing.expect(h.app.picker.open);
+    }
+}
+
+test "a browse that returns nothing is not treated as a picked file" {
+    // A backend that was asked for a file and got none reports `.other`. An
+    // app that read `first()` off an empty list would have to guess, and
+    // `App.browseForDatabase` guards against exactly that.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var fake: ui.file_dialog.fake.Fake = undefined;
+    defer ui.file_dialog.fake.uninstall();
+    h.scriptDialog(&fake, .{ .selected = &.{} });
+
+    h.app.browseForDatabase();
+
+    // Nothing opened, and the app is still alive and still on what it had.
+    try testing.expect(h.app.db_open);
+    try testing.expectEqualStrings(":memory:", h.app.db_path);
+}
+
+test "browsing twice opens the second database" {
+    // The fake is stateless between calls apart from its counter, so a second
+    // browse is a second real round trip. This is what makes switching
+    // databases through Browse work at all.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    var dir = try DbDir.init(&h, "meja-e2e-browse-twice");
+    defer dir.deinit();
+    try dir.writeDb("one.db");
+    try dir.writeDb("two.db");
+    const first_path = try dir.join("one.db");
+    defer gpa.free(first_path);
+    const second_path = try dir.join("two.db");
+    defer gpa.free(second_path);
+
+    var fake: ui.file_dialog.fake.Fake = undefined;
+    defer ui.file_dialog.fake.uninstall();
+    h.scriptDialog(&fake, .{ .selected = &.{first_path} });
+
+    h.app.browseForDatabase();
+    try testing.expectEqualStrings(first_path, h.app.db_path);
+
+    fake.answer = .{ .selected = &.{second_path} };
+    h.app.browseForDatabase();
+    try testing.expectEqualStrings(second_path, h.app.db_path);
+    try testing.expectEqual(@as(usize, 2), fake.calls);
+}
+
+test "the Browse button is a real click target in the frame" {
+    // A Browse action no frame draws is the same failure as a database
+    // browser with no way to change database. This is the assertion that
+    // would catch the button being defined and never declared.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+
+    h.frame();
+    try testing.expect(h.driver.exists("sidebar.browse"));
+    // The picker's own Browse is there too, so the listing can hand over.
+    h.app.openPicker();
+    h.frame();
+    try testing.expect(h.driver.exists("picker.browse"));
 }

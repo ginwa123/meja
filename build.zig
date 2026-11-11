@@ -136,23 +136,32 @@ pub fn build(b: *std.Build) void {
     // --- a dump tool: renders a real frame and prints what it drew ---
     // Not installed; run it with `zig build inspect -- <db>`. It is how
     // the GUI was verified without a human at the screen.
-    const inspect = b.addExecutable(.{
-        .name = "meja-inspect",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/gui/inspect.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "meja", .module = meja_mod },
-                .{ .name = "databases", .module = databases_mod },
-                .{ .name = "glinlandui", .module = glinlandui_dep.?.module("glinlandui") },
-            },
-        }),
-    });
-    const run_inspect = b.addRunArtifact(inspect);
-    if (b.args) |args| run_inspect.addArgs(args);
-    const inspect_step = b.step("inspect", "Render one frame and print it");
-    inspect_step.dependOn(&run_inspect.step);
+    //
+    // GUI-only, like the executable above it: it drives the REAL draw
+    // functions, so there is nothing to build without glinlandui. The
+    // old version reached for `glinlandui_dep.?` unconditionally, which
+    // made `zig build test -Dgui=false` — the documented way to build on
+    // a box with no Wayland toolchain — abort in build.zig itself,
+    // before compiling anything.
+    if (glinlandui_dep) |gdep| {
+        const inspect = b.addExecutable(.{
+            .name = "meja-inspect",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/gui/inspect.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "meja", .module = meja_mod },
+                    .{ .name = "databases", .module = databases_mod },
+                    .{ .name = "glinlandui", .module = gdep.module("glinlandui") },
+                },
+            }),
+        });
+        const run_inspect = b.addRunArtifact(inspect);
+        if (b.args) |args| run_inspect.addArgs(args);
+        const inspect_step = b.step("inspect", "Render one frame and print it");
+        inspect_step.dependOn(&run_inspect.step);
+    }
 
     // --- tests ---
     // The core is tested directly against the `meja` module. It has no

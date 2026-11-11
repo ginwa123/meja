@@ -89,7 +89,11 @@ pub const Editor = struct {
     /// `SELECT`.
     pub fn setText(self: *Editor, new_text: []const u8) void {
         const n = @min(new_text.len, self.buf.len);
-        @memcpy(self.buf[0..n], new_text[0..n]);
+        // @memmove, not @memcpy: the caller may hand this a slice of the
+        // buffer being set. That is not hypothetical — the picker's Enter
+        // handler does exactly `field.setText(field.text())`, and
+        // @memcpy panics on aliasing rather than quietly copying.
+        @memmove(self.buf[0..n], new_text[0..n]);
         self.len = n;
         self.caret = .{};
     }
@@ -388,6 +392,7 @@ pub fn handleKey(
 
 // Raw evdev key codes, matching glinlandui's `input` module so a key
 // handler can be shared between the single-line and multi-line fields.
+pub const KEY_TAB: u32 = 15;
 pub const KEY_BACKSPACE: u32 = 14;
 pub const KEY_ENTER: u32 = 28;
 pub const KEY_A: u32 = 30;
@@ -401,6 +406,9 @@ pub const KEY_HOME: u32 = 102;
 pub const KEY_END: u32 = 107;
 pub const KEY_DELETE: u32 = 111;
 pub const KEY_K: u32 = 37;
+// Ctrl+O. Not something the editor itself acts on, but it belongs in
+// the same table as every other code, so one keymap is one list.
+pub const KEY_O: u32 = 24;
 
 /// Map a keycode to a printable ASCII byte (US layout), or null.
 ///
@@ -829,7 +837,9 @@ test "setText truncates rather than overflowing" {
 /// Copy `text` into `buf`, truncated to fit. Never writes past the end.
 pub fn clampTo(text: []const u8, buf: []u8) []const u8 {
     const n = @min(text.len, buf.len -| 1);
-    @memcpy(buf[0..n], text[0..n]);
+    // Overlap-tolerant: the destination is a scratch buffer the caller
+    // may have carved out of the very text being copied.
+    @memmove(buf[0..n], text[0..n]);
     return buf[0..n];
 }
 
@@ -858,7 +868,7 @@ pub fn renderLineWithCaret(line_text: []const u8, caret_at: ?usize, buf: []u8) [
 
     const caret = @min(at, line_text.len);
     const head = @min(caret, cap -| 1);
-    @memcpy(out[0..head], line_text[0..head]);
+    @memmove(out[0..head], line_text[0..head]);
 
     // A caret sitting ON a space replaces it: the user sees one cursor,
     // not a cursor followed by the very space it is sitting on. A caret
