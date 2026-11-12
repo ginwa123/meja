@@ -216,6 +216,7 @@ fn treeSearchField(self: *App) void {
         .caret = @min(self.tree_search_ed.caret.offset, self.tree_search_ed.len),
         .anchor = self.tree_search_ed.caret.anchor,
     });
+    registry.registerClickCursor(ui.zclay.getElementId("sidebar.search"), onFocusTreeSearch, self, .text);
 }
 
 fn sidebarTree(self: *App) void {
@@ -515,6 +516,7 @@ fn filterField(self: *App) void {
         .caret = @min(self.filter_ed.caret.offset, self.filter_ed.len),
         .anchor = self.filter_ed.caret.anchor,
     });
+    registry.registerClickCursor(ui.zclay.getElementId("results.filter"), onFocusFilter, self, .text);
 }
 
 fn gridBody(self: *App) void {
@@ -863,6 +865,7 @@ fn paletteBandChildren(self: *App) void {
         .caret = @min(self.palette_ed.caret.offset, self.palette_ed.len),
         .anchor = self.palette_ed.caret.anchor,
     });
+    registry.registerClickCursor(ui.zclay.getElementId("palette.input"), onFocusPalette, self, .text);
 
     const matches = self.paletteMatchCount();
     if (matches == 0) {
@@ -1114,6 +1117,21 @@ fn onPaletteRowClick(ctx: ?*anyopaque, index: usize) void {
     const self: *App = @ptrCast(@alignCast(ctx.?));
     self.closePalette();
     self.openTableTab(index);
+}
+
+fn onFocusTreeSearch(ctx: ?*anyopaque) void {
+    const self: *App = @ptrCast(@alignCast(ctx.?));
+    self.focus = .tree_search;
+}
+
+fn onFocusFilter(ctx: ?*anyopaque) void {
+    const self: *App = @ptrCast(@alignCast(ctx.?));
+    self.focus = .row_filter;
+}
+
+fn onFocusPalette(ctx: ?*anyopaque) void {
+    const self: *App = @ptrCast(@alignCast(ctx.?));
+    self.focus = .palette;
 }
 
 fn onPaletteClick(ctx: ?*anyopaque) void {

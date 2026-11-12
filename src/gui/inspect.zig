@@ -70,10 +70,20 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    // Time a run of frames, so a slow window is a number rather than a feeling.
+    const bench_frames: usize = 30;
+    const t0 = std.Io.Clock.now(.awake, app.io).nanoseconds;
+    for (0..bench_frames) |_| {
+        driver.frame();
+    }
+    const t1 = std.Io.Clock.now(.awake, app.io).nanoseconds;
+    const per_frame_ms = @as(f64, @floatFromInt(t1 - t0)) / 1e6 / @as(f64, @floatFromInt(bench_frames));
+
     const snap = driver.snapshot();
     try w.print("\nFRAME: {d} rects, {d} texts, {d} scissor\n", .{
         snap.rectangle_count, snap.text_count, snap.scissor_count,
     });
+    try w.print("BENCH: {d:.2} ms/frame over {d} frames\n", .{ per_frame_ms, bench_frames });
 
     std.debug.print("{s}", .{out.written()});
 }

@@ -923,13 +923,58 @@ pub const App = struct {
             if (self.picker.open) self.closePicker() else self.openPicker();
             return true;
         }
-        if (self.focus == .path) return self.onPathKey(mods, keycode);
+        if (mods.ctrl and keycode == editor.KEY_K) {
+            if (self.palette_open) self.closePalette() else self.openPalette();
+            return true;
+        }
+        if (keycode == editor.KEY_ESCAPE) {
+            if (self.palette_open) {
+                self.closePalette();
+                return true;
+            }
+            if (self.focus != .sql_editor) {
+                self.focus = .sql_editor;
+                return true;
+            }
+        }
+        switch (self.focus) {
+            .tree_search => return self.onFieldKey(&self.tree_search_ed, keycode, mods, .tree),
+            .row_filter => return self.onFieldKey(&self.filter_ed, keycode, mods, .filter),
+            .palette => return self.onFieldKey(&self.palette_ed, keycode, mods, .palette),
+            .path => return self.onPathKey(mods, keycode),
+            .sql_editor => {},
+        }
         // The picker is open but the editor has the keyboard: Tab is how the user gets to the path field without reaching for the mouse.
         if (self.picker.open and keycode == editor.KEY_TAB) {
             self.focus = .path;
             return true;
         }
         return self.onEditorKey(mods, keycode);
+    }
+
+    /// Which small field a key is going to.
+    const Field = enum { tree, filter, palette };
+
+    /// Keys for one of the small text fields. The editor's own handler does the work, so typing, Backspace, Home/End and shift-selection behave exactly as they do in the SQL editor.
+    fn onFieldKey(self: *App, ed: *editor.Editor, keycode: u32, mods: input_mod.Mods, which: Field) bool {
+        switch (editor.handleKey(ed, keycode, mods.shift, mods.ctrl)) {
+            .edited => {
+                switch (which) {
+                    .tree => self.tree_search = ed.text(),
+                    .filter => self.syncFilter(),
+                    .palette => {
+                        self.palette = ed.text();
+                        self.palette_idx = 0;
+                    },
+                }
+                return true;
+            },
+            .run_requested => {
+                self.runEditor();
+                return true;
+            },
+            .ignored => return false,
+        }
     }
 
     fn onEditorKey(self: *App, mods: input_mod.Mods, keycode: u32) bool {

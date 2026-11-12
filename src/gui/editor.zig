@@ -370,6 +370,8 @@ pub const KEY_DELETE: u32 = 111;
 pub const KEY_K: u32 = 37;
 // Ctrl+O.
 pub const KEY_O: u32 = 24;
+/// Escape, evdev code 1.
+pub const KEY_ESCAPE: u32 = 1;
 
 /// Map a keycode to a printable ASCII byte (US layout), or null.
 pub fn keyChar(keycode: u32, shift: bool) ?u8 {
