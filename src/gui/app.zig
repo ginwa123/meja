@@ -13,10 +13,10 @@ const glin = @import("glinlandui");
 const input_mod = glin.components.input;
 const text_input = glin.text_input;
 
-const editor = @import("editor.zig");
-const grid = @import("grid.zig");
-const picker_mod = @import("picker.zig");
-const dialog = @import("dialog.zig");
+const editor = glin.text_editor;
+const grid = glin.table;
+const picker_mod = @import("components/picker.zig");
+const dialog = @import("components/dialog.zig");
 const theme = @import("theme.zig");
 
 /// Which text field owns the keyboard.

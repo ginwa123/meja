@@ -1,9 +1,10 @@
 //! Choosing a database from inside the window.
 
 const std = @import("std");
+const ui = @import("glinlandui");
 const Io = std.Io;
 
-const editor = @import("editor.zig");
+const editor = ui.text_editor;
 
 /// Longest path the picker holds, in bytes.
 pub const path_capacity: usize = 512;
