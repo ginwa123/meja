@@ -772,29 +772,24 @@ pub fn clampTo(text: []const u8, buf: []u8) []const u8 {
 /// Render one editor line with a visible caret, into `buf`.
 pub fn renderLineWithCaret(line_text: []const u8, caret_at: ?usize, buf: []u8) []const u8 {
     const at = caret_at orelse return clampTo(line_text, buf);
-
-    // One extra byte for the caret, and it must fit in `buf`.
-    const cap = @min(buf.len, line_text.len + 1);
-    if (cap == 0) return buf[0..0];
-    const out = buf[0..cap];
+    if (buf.len == 0) return buf[0..0];
 
     const caret = @min(at, line_text.len);
-    const head = @min(caret, cap -| 1);
-    @memmove(out[0..head], line_text[0..head]);
+    // A visible bar INSERTED at the caret, not a space that replaces the character under it: a space is invisible, which is why the editor looked like it had no cursor at all.
+    const head = @min(caret, buf.len -| 1);
+    @memmove(buf[0..head], line_text[0..head]);
 
-    // A caret sitting ON a space replaces it: the user sees one cursor, not a cursor followed by the very space it is sitting on.
-    const on_space = caret < line_text.len and line_text[caret] == ' ';
-    const consumed = on_space; // was the character at `caret` swallowed?
-    if (head < cap) out[head] = if (on_space) '_' else ' ';
-
-    // The tail after the caret, for whatever room is left.
-    var written = @min(head + 1, cap);
-    var i = caret + @intFromBool(consumed);
-    while (i < line_text.len and written < cap) : (i += 1) {
-        out[written] = line_text[i];
+    var written = head;
+    if (written < buf.len) {
+        buf[written] = '|';
         written += 1;
     }
-    return out[0..written];
+    var i = caret;
+    while (i < line_text.len and written < buf.len) : (i += 1) {
+        buf[written] = line_text[i];
+        written += 1;
+    }
+    return buf[0..written];
 }
 
 test "the caret lands at the caret position" {
@@ -803,29 +798,29 @@ test "the caret lands at the caret position" {
     const out = renderLineWithCaret("SELECT", 3, &buf);
     try testing.expectEqual(@as(usize, 7), out.len);
     try testing.expectEqualStrings("SEL", out[0..3]);
-    try testing.expectEqual(@as(u8, ' '), out[3]);
+    try testing.expectEqual(@as(u8, '|'), out[3]);
     try testing.expectEqualStrings("ECT", out[4..7]);
 }
 
-test "a caret on a space is drawn as an underscore" {
+test "a caret on a space is drawn as a bar, and the space survives" {
     var buf: [64]u8 = undefined;
     // "a b", caret on the space at index 1.
-    try testing.expectEqualStrings("a_b", renderLineWithCaret("a b", 1, &buf));
+    try testing.expectEqualStrings("a| b", renderLineWithCaret("a b", 1, &buf));
 }
 
 test "a caret on a letter is drawn as a space" {
     var buf: [64]u8 = undefined;
-    try testing.expectEqualStrings("ab ", renderLineWithCaret("ab", 2, &buf));
+    try testing.expectEqualStrings("ab|", renderLineWithCaret("ab", 2, &buf));
 }
 
 test "a caret past the end of the line still renders" {
     var buf: [64]u8 = undefined;
-    try testing.expectEqualStrings("abc ", renderLineWithCaret("abc", 99, &buf));
+    try testing.expectEqualStrings("abc|", renderLineWithCaret("abc", 99, &buf));
 }
 
 test "an empty line with a caret renders one space" {
     var buf: [8]u8 = undefined;
-    try testing.expectEqualStrings(" ", renderLineWithCaret("", 0, &buf));
+    try testing.expectEqualStrings("|", renderLineWithCaret("", 0, &buf));
 }
 
 test "no caret just clamps the text" {
