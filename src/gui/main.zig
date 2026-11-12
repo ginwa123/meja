@@ -203,22 +203,19 @@ fn sidebarChildren(self: *App) void {
 }
 
 fn treeSearchField(self: *App) void {
-    input_mod.fieldEdit(.{
+    input_mod.liveField(.{
         .id = "sidebar.search",
         .font_size = theme.font_size_small,
         .fg = theme.text,
         .bg = theme.bg_editor,
-        .sel_fg = theme.bg_selected,
+        .sel_fg = theme.text_bright,
+        .sel_bg = theme.bg_selected,
         .h = 28,
         .pad_tb = 4,
         .pad_lr = 8,
         .border_width = 1,
         .border_color = theme.line,
-    }, self.tree_search_ed.text(), .{
-        .caret = @min(self.tree_search_ed.caret.offset, self.tree_search_ed.len),
-        .anchor = self.tree_search_ed.caret.anchor,
-    });
-    registry.registerClickCursor(ui.zclay.getElementId("sidebar.search"), onFocusTreeSearch, self, .text);
+    }, &self.tree_search_ctx);
 }
 
 fn sidebarTree(self: *App) void {
@@ -502,23 +499,20 @@ fn resultsStats(self: *App) void {
 }
 
 fn filterField(self: *App) void {
-    input_mod.fieldEdit(.{
+    input_mod.liveField(.{
         .id = "results.filter",
         .font_size = theme.font_size_tiny,
         .fg = theme.text,
         .bg = theme.bg_editor,
-        .sel_fg = theme.bg_selected,
+        .sel_fg = theme.text_bright,
+        .sel_bg = theme.bg_selected,
         .w = 180,
         .h = 22,
         .pad_tb = 2,
         .pad_lr = 8,
         .border_width = 1,
         .border_color = theme.line,
-    }, self.filter_ed.text(), .{
-        .caret = @min(self.filter_ed.caret.offset, self.filter_ed.len),
-        .anchor = self.filter_ed.caret.anchor,
-    });
-    registry.registerClickCursor(ui.zclay.getElementId("results.filter"), onFocusFilter, self, .text);
+    }, &self.filter_ctx);
 }
 
 fn gridBody(self: *App) void {
@@ -895,22 +889,19 @@ fn paletteBand(self: *App) void {
 }
 
 fn paletteBandChildren(self: *App) void {
-    input_mod.fieldEdit(.{
+    input_mod.liveField(.{
         .id = "palette.input",
         .font_size = theme.font_size,
         .fg = theme.text_bright,
         .bg = theme.bg_editor,
-        .sel_fg = theme.bg_selected,
+        .sel_fg = theme.text_bright,
+        .sel_bg = theme.bg_selected,
         .h = 30,
         .pad_tb = 5,
         .pad_lr = 10,
         .border_width = 1,
         .border_color = theme.line,
-    }, self.palette_ed.text(), .{
-        .caret = @min(self.palette_ed.caret.offset, self.palette_ed.len),
-        .anchor = self.palette_ed.caret.anchor,
-    });
-    registry.registerClickCursor(ui.zclay.getElementId("palette.input"), onFocusPalette, self, .text);
+    }, &self.palette_ctx);
 
     const matches = self.paletteMatchCount();
     if (matches == 0) {
@@ -1162,21 +1153,6 @@ fn onPaletteRowClick(ctx: ?*anyopaque, index: usize) void {
     const self: *App = @ptrCast(@alignCast(ctx.?));
     self.closePalette();
     self.openTableTab(index);
-}
-
-fn onFocusTreeSearch(ctx: ?*anyopaque) void {
-    const self: *App = @ptrCast(@alignCast(ctx.?));
-    self.focus = .tree_search;
-}
-
-fn onFocusFilter(ctx: ?*anyopaque) void {
-    const self: *App = @ptrCast(@alignCast(ctx.?));
-    self.focus = .row_filter;
-}
-
-fn onFocusPalette(ctx: ?*anyopaque) void {
-    const self: *App = @ptrCast(@alignCast(ctx.?));
-    self.focus = .palette;
 }
 
 fn onPaletteClick(ctx: ?*anyopaque) void {
