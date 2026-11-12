@@ -48,9 +48,24 @@ pub fn gridBody(self: *App) void {
         .h = .grow,
         .max_w = viewportWidth(self),
         .show_scrollbar = true,
-    }, self, gridRows);
+    }, self, gridContent);
 
     maybeLoadMore(self);
+}
+
+/// One fixed-width box holding every row.
+fn gridContent(self: *App) void {
+    box_mod.box(.{
+        .id = "grid.content",
+        .w = .{ .fixed = totalWidth(self) },
+        .h = .fit,
+        .direction = .column,
+        .gap = 0,
+    }, self, gridContentChildren);
+}
+
+fn gridContentChildren(self: *App) void {
+    gridRows(self);
 }
 
 /// The width the grid may occupy: the window minus the sidebar.
@@ -230,7 +245,8 @@ pub fn gridRows(self: *App) void {
 
     // Virtualise: declare only the rows the viewport can see, with spacers above and below so the scrollbar still reflects the whole result.
     var first: usize = 0;
-    var visible: usize = total;
+    // A hard cap even before the scroll data exists: the first frame has no scroll offset, and declaring 200 rows x 13 columns exhausts the frame arena, which makes every id fall back to the same string and Clay log duplicate_id for each one.
+    var visible: usize = @min(total, 60);
     const data = ui.zclay.getScrollContainerData(ui.zclay.getElementId("grid.scroll"));
     if (data.found) {
         const scrolled = @max(-data.scroll_position.y, 0);
@@ -327,8 +343,8 @@ pub fn cellChildren(ctx: CellCtx) void {
 
     const v = row.values[ctx.col];
     const is_null = v.isNull();
-    // NOT a local buffer: the draw command keeps this pointer until the rasteriser runs.
-    const buf = self.claimText(512);
+    // NOT a local buffer: the draw command keeps this pointer until the rasteriser runs. Claim what the value needs, not a fixed 512: a wide grid would exhaust the frame arena and every id would fall back to the same string.
+    const buf = self.claimText(256);
     const shown = if (is_null) "NULL" else value_mod.render(buf, v);
 
     text_mod.label(.{

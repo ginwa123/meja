@@ -83,7 +83,7 @@ pub const App = struct {
     sql_buf: [16 * 1024]u8 = undefined,
 
     /// Scratch space for every string handed to a draw command in one frame.
-    text_arena: [512 * 1024]u8 = undefined,
+    text_arena: [2 * 1024 * 1024]u8 = undefined,
     text_used: usize = 0,
     ed: editor.Editor = undefined,
 
