@@ -41,6 +41,8 @@ pub fn root(ctx: ?*anyopaque, w: u32, h: u32) void {
     self.window_h = h;
     // Every label below borrows from this arena, so it resets once, here, before anything claims space.
     self.beginFrame();
+    // A load requested by the last frame's scroll runs here, before anything is declared.
+    self.applyPendingLoad();
     // The tree's labels and counts live in the same arena, so it is rebuilt inside the frame.
     self.rebuildTree();
     self.rebuildTabViews();
@@ -456,7 +458,7 @@ fn resultsPane(self: *App) void {
 fn resultsPaneChildren(self: *App) void {
     resultsBar(self);
     gridBody(self);
-    pager(self);
+    gridFooter(self);
 }
 
 fn resultsBar(self: *App) void {
@@ -542,15 +544,57 @@ fn gridBody(self: *App) void {
         return;
     }
 
-    gridHeader(self);
-
+    // Horizontal scroll wraps the header AND the body, so a wide result scrolls as one table instead of a header that stays put over rows that move.
     scroll_mod.scroll(.{
-        .id = "grid.scroll",
-        .direction = .vertical,
+        .id = "grid.hscroll",
+        .direction = .horizontal,
         .w = .grow,
         .h = .grow,
         .show_scrollbar = true,
+    }, self, gridColumns);
+
+    maybeLoadMore(self);
+}
+
+/// The full table width: the row-number gutter plus every column.
+fn totalWidth(self: *App) f32 {
+    var w: f32 = theme.rownum_w;
+    for (self.col_widths.items) |cw| w += @floatFromInt(cw);
+    return w;
+}
+
+fn gridColumns(self: *App) void {
+    box_mod.box(.{
+        .id = "grid.columns",
+        .w = .{ .fixed = totalWidth(self) },
+        .h = .grow,
+        .direction = .column,
+        .gap = 0,
+    }, self, gridColumnsChildren);
+}
+
+fn gridColumnsChildren(self: *App) void {
+    gridHeader(self);
+    scroll_mod.scroll(.{
+        .id = "grid.scroll",
+        .direction = .vertical,
+        .w = .{ .fixed = totalWidth(self) },
+        .h = .grow,
+        .show_scrollbar = true,
     }, self, gridRows);
+}
+
+/// Ask for the next chunk when the viewport is within a row of the bottom.
+fn maybeLoadMore(self: *App) void {
+    if (!self.has_result or !self.result.truncated) return;
+    const data = ui.zclay.getScrollContainerData(ui.zclay.getElementId("grid.scroll"));
+    if (!data.found) return;
+    const view = data.scroll_container_dimensions.h;
+    const content = data.content_dimensions.h;
+    if (content <= view) return;
+    // Clay's scroll position is negative going down.
+    const scrolled = -data.scroll_position.y;
+    if (scrolled + view >= content - 40) self.loadMore();
 }
 
 fn gridEmptyChildren(self: *App) void {
@@ -575,6 +619,8 @@ fn gridHeader(self: *App) void {
         .direction = .row,
         .bg = theme.bg_header,
         .gap = 0,
+        .border_width = 1,
+        .border_color = theme.line,
     }, self, gridHeaderChildren);
 }
 
@@ -587,9 +633,8 @@ fn gridHeaderChildren(self: *App) void {
         .pad = 4,
     }, self, headerNumChildren);
 
-    const cols = grid.visibleColumns(self.col_widths.items, @floatFromInt(self.window_w), 0);
-    var c: usize = cols.first;
-    while (c < cols.first + cols.count) : (c += 1) {
+    var c: usize = 0;
+    while (c < self.col_widths.items.len) : (c += 1) {
         headerCell(self, c);
     }
 }
@@ -657,10 +702,38 @@ fn headerCellChildren(ctx: HeaderCtx) void {
 }
 
 fn gridRows(self: *App) void {
-    const count = self.pageRowCount();
-    for (0..count) |i| {
-        gridRow(self, i);
+    const total = self.pageRowCount();
+    if (total == 0) return;
+    const row_h: f32 = @floatFromInt(theme.row_height);
+
+    // Virtualise: declare only the rows the viewport can see, with spacers above and below so the scrollbar still reflects the whole result.
+    var first: usize = 0;
+    var visible: usize = total;
+    const data = ui.zclay.getScrollContainerData(ui.zclay.getElementId("grid.scroll"));
+    if (data.found) {
+        const scrolled = @max(-data.scroll_position.y, 0);
+        const view = data.scroll_container_dimensions.h;
+        const first_f: f32 = @floor(scrolled / row_h);
+        first = @min(@as(usize, @intFromFloat(first_f)), total -| 1);
+        const fits_f: f32 = @ceil(view / row_h) + 2;
+        const fits: usize = @intFromFloat(fits_f);
+        visible = @min(fits, total - first);
     }
+
+    if (first > 0) padBox(self, "grid.pad.top", @as(f32, @floatFromInt(first)) * row_h);
+    for (0..visible) |i| gridRow(self, first + i);
+    const after = total - (first + visible);
+    if (after > 0) padBox(self, "grid.pad.bottom", @as(f32, @floatFromInt(after)) * row_h);
+}
+
+/// A transparent box of a fixed height, used to stand in for rows that are scrolled out of view.
+fn padBox(self: *App, id: []const u8, height: f32) void {
+    box_mod.box(.{
+        .id = id,
+        .w = .grow,
+        .h = .{ .fixed = height },
+        .direction = .row,
+    }, self, noChildren);
 }
 
 /// Context for one grid row: which display position on the page.
@@ -694,9 +767,8 @@ fn gridRowChildren(ctx: RowCtx) void {
         .pad = 4,
     }, ctx, rowNumChildren);
 
-    const cols = grid.visibleColumns(self.col_widths.items, @floatFromInt(self.window_w), 0);
-    var c: usize = cols.first;
-    while (c < cols.first + cols.count) : (c += 1) {
+    var c: usize = 0;
+    while (c < self.col_widths.items.len) : (c += 1) {
         if (c >= row.values.len) break;
         cell(self, ctx.display, c);
     }
@@ -744,7 +816,7 @@ fn cellChildren(ctx: CellCtx) void {
     });
 }
 
-fn pager(self: *App) void {
+fn gridFooter(self: *App) void {
     box_mod.box(.{
         .id = "pager",
         .w = .grow,
@@ -753,57 +825,30 @@ fn pager(self: *App) void {
         .bg = theme.bg_panel,
         .pad = 6,
         .gap = 8,
-    }, self, pagerChildren);
+    }, self, gridFooterChildren);
 }
 
-fn pagerChildren(self: *App) void {
+fn gridFooterChildren(self: *App) void {
     const total = self.row_order.items.len;
-    const start = self.page * App.page_size;
-    const end = @min(start + App.page_size, total);
-
     const buf = self.claimText(96);
-    const shown = if (total == 0)
-        std.fmt.bufPrint(buf, "0 rows", .{}) catch buf[0..0]
-    else
-        std.fmt.bufPrint(buf, "{d}–{d} of {d}", .{ start + 1, end, total }) catch buf[0..0];
+    const shown = std.fmt.bufPrint(buf, "{d} rows loaded", .{total}) catch buf[0..0];
     text_mod.label(.{ .str = shown, .font_size = theme.font_size_tiny, .color = theme.text_dim });
 
     box_mod.spacer("pager.spacer");
 
-    button.button(.{
-        .id = "pager.prev",
-        .label = "Prev",
-        .font_size = theme.font_size_tiny,
-        .bg = theme.bg_header,
-        .fg = theme.text_dim,
-        .hover_bg = theme.bg_hover,
-        .pad_tb = 2,
-        .pad_lr = 8,
-        .disabled = self.page == 0,
-        .on_click = onPrevPage,
-        .ctx = self,
-    });
-
-    const page_buf = self.claimText(48);
-    const page_text = std.fmt.bufPrint(page_buf, "page {d} / {d}", .{
-        self.page + 1,
-        self.pageCount(),
-    }) catch page_buf[0..0];
-    text_mod.label(.{ .str = page_text, .font_size = theme.font_size_tiny, .color = theme.text_faint });
-
-    button.button(.{
-        .id = "pager.next",
-        .label = "Next",
-        .font_size = theme.font_size_tiny,
-        .bg = theme.bg_header,
-        .fg = theme.text_dim,
-        .hover_bg = theme.bg_hover,
-        .pad_tb = 2,
-        .pad_lr = 8,
-        .disabled = self.page + 1 >= self.pageCount(),
-        .on_click = onNextPage,
-        .ctx = self,
-    });
+    if (self.has_result and self.result.truncated) {
+        text_mod.label(.{
+            .str = "scroll for more",
+            .font_size = theme.font_size_tiny,
+            .color = theme.text_faint,
+        });
+    } else if (self.has_result) {
+        text_mod.label(.{
+            .str = "end of result",
+            .font_size = theme.font_size_tiny,
+            .color = theme.text_ghost,
+        });
+    }
 }
 
 // ---- status ---------------------------------------------------------------
@@ -1142,16 +1187,6 @@ fn onPaletteClick(ctx: ?*anyopaque) void {
 fn onRunClick(ctx: ?*anyopaque) void {
     const self: *App = @ptrCast(@alignCast(ctx.?));
     self.runEditor();
-}
-
-fn onPrevPage(ctx: ?*anyopaque) void {
-    const self: *App = @ptrCast(@alignCast(ctx.?));
-    if (self.page > 0) self.setPage(self.page - 1);
-}
-
-fn onNextPage(ctx: ?*anyopaque) void {
-    const self: *App = @ptrCast(@alignCast(ctx.?));
-    self.setPage(self.page + 1);
 }
 
 fn onSidebarOpenClick(ctx: ?*anyopaque) void {

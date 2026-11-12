@@ -79,6 +79,19 @@ pub fn main(init: std.process.Init) !void {
     const t1 = std.Io.Clock.now(.awake, app.io).nanoseconds;
     const per_frame_ms = @as(f64, @floatFromInt(t1 - t0)) / 1e6 / @as(f64, @floatFromInt(bench_frames));
 
+    // Where the results pane's pieces actually landed, which is the only way to see an overlap.
+    const ids = [_][]const u8{ "results.bar", "grid.header", "grid.scroll", "grid.row.0", "grid.row.1", "pager" };
+    for (ids) |id| {
+        const d = ui.zclay.getElementData(ui.zclay.getElementId(id));
+        if (!d.found) {
+            try w.print("BOX {s}: not found\n", .{id});
+            continue;
+        }
+        try w.print("BOX {s}: x={d:.0} y={d:.0} w={d:.0} h={d:.0}\n", .{
+            id, d.bounding_box.x, d.bounding_box.y, d.bounding_box.width, d.bounding_box.height,
+        });
+    }
+
     const snap = driver.snapshot();
     try w.print("\nFRAME: {d} rects, {d} texts, {d} scissor\n", .{
         snap.rectangle_count, snap.text_count, snap.scissor_count,

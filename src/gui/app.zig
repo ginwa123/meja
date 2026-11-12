@@ -100,6 +100,10 @@ pub const App = struct {
     filter_ed: editor.Editor = undefined,
     filter: []const u8 = "",
     page: usize = 0,
+    /// How many rows the query asks for. Grows as the grid is scrolled, which is what makes the grid lazy instead of paged.
+    loaded_rows: usize = 200,
+    /// Set when the grid reached the bottom and wants more; consumed at the top of the next frame.
+    pending_load: bool = false,
     sort_col: ?usize = null,
     sort_dir: i8 = 0,
     /// Display order: result row indices after the filter and the sort.
@@ -398,7 +402,9 @@ pub const App = struct {
         // Only the LAST statement's result is shown, which matches what the sqlite3 CLI does: a script's final SELECT is the answer.
         for (statements) |st| {
             self.clearResult();
-            self.result = query.run(self.gpa, &self.db, st.text, .{}) catch {
+            self.result = query.run(self.gpa, &self.db, st.text, .{
+                .limit = .{ .rows = self.loaded_rows },
+            }) catch {
                 self.setStatus("query failed", .{});
                 continue;
             };
@@ -812,25 +818,35 @@ pub const App = struct {
         self.page = @min(page, pages - 1);
     }
 
-    /// How many pages the filtered result has. Always at least one, so the pager never reads "0 of 0".
+    /// The grid is one continuous list, so there is exactly one page.
     pub fn pageCount(self: *App) usize {
-        const n = self.row_order.items.len;
-        if (n == 0) return 1;
-        return (n + page_size - 1) / page_size;
+        _ = self;
+        return 1;
     }
 
-    /// How many rows the current page holds.
+    /// How many rows the grid draws: every loaded row.
     pub fn pageRowCount(self: *App) usize {
-        const start = self.page * page_size;
-        if (start >= self.row_order.items.len) return 0;
-        return @min(page_size, self.row_order.items.len - start);
+        return self.row_order.items.len;
     }
 
-    /// The result row index shown at `display_index` on the current page.
+    /// The result row index shown at `display_index`.
     pub fn pageRowAt(self: *App, display_index: usize) ?usize {
-        const i = self.page * page_size + display_index;
-        if (i >= self.row_order.items.len) return null;
-        return self.row_order.items[i];
+        if (display_index >= self.row_order.items.len) return null;
+        return self.row_order.items[display_index];
+    }
+
+    /// Ask for another chunk of rows. The re-run happens at the top of the next frame, so a frame never changes the result set it is drawing.
+    pub fn loadMore(self: *App) void {
+        if (!self.has_result or !self.result.truncated) return;
+        self.loaded_rows += 200;
+        self.pending_load = true;
+    }
+
+    /// Re-run the active tab's query at the current row budget.
+    pub fn applyPendingLoad(self: *App) void {
+        if (!self.pending_load) return;
+        self.pending_load = false;
+        self.runEditor();
     }
 
     /// Recompute the display order from the filter and the sort.
