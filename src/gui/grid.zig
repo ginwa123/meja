@@ -1,22 +1,4 @@
 //! Grid virtualisation: which cells to draw, given a scroll position.
-//!
-//! A data grid that declares a widget per cell cannot show a 100k-row
-//! table. Two hard limits make that non-negotiable here:
-//!
-//!   - `click_registry.cap` is **256** entries per frame, and entries
-//!     past that are silently dropped. A grid registering one click
-//!     target per row therefore stops responding at row 256.
-//!   - macOS and Windows rasterize on the CPU, so per-frame cell count
-//!     is the frame's cost.
-//!
-//! So the grid only ever declares the rows that intersect the viewport,
-//! plus a small overscan. The arithmetic lives here as a pure function,
-//! with no glinlandui types at all, so it can be tested with no display.
-//!
-//! The model: Clay's scroll position is negative going down (0 at the
-//! top, `-(content - viewport)` at the bottom). That sign convention is
-//! easy to get wrong, so it is converted to a plain non-negative
-//! `scroll_y` at the boundary and everything below works in pixels.
 
 const std = @import("std");
 
@@ -44,8 +26,7 @@ pub const Viewport = struct {
     height: f32,
     /// Visible width in pixels.
     width: f32,
-    /// How many extra rows to draw above and below, to cover partial
-    /// rows and fast scrolling.
+    /// How many extra rows to draw above and below, to cover partial rows and fast scrolling.
     overscan: usize = 2,
 };
 
@@ -66,8 +47,7 @@ pub const Visible = struct {
     /// Total height of all rows, for the scrollbar's content size.
     content_height: f32,
 
-    /// Rows that would be declared even before overscan. Used by the
-    /// tests to assert the cap is respected independently of overscan.
+    /// Rows that would be declared even before overscan.
     pub fn declaredRows(self: Visible) usize {
         return self.row_count;
     }
@@ -78,14 +58,10 @@ pub fn visible(view: Viewport) Visible {
     const content_height = @as(f32, @floatFromInt(view.total_rows)) *
         @as(f32, @floatFromInt(row_height));
 
-    // A negative or NaN scroll (Clay can hand one back before the first
-    // layout settles) must not produce a nonsense first_row.
+    // A negative or NaN scroll (Clay can hand one back before the first layout settles) must not produce a nonsense first_row.
     const scroll_y = if (std.math.isNan(view.scroll_y) or view.scroll_y < 0) 0 else view.scroll_y;
 
-    // Clamp the scroll to the content first. Without this a scroll far
-    // past the end (which Clay can report before a layout settles)
-    // saturates `first_row` at 0 and the user sees the TOP of the table
-    // while parked at the bottom of the scrollbar.
+    // Clamp the scroll to the content first.
     const max_scroll = @max(content_height - @max(view.height, 0), 0);
     const effective_scroll = @min(scroll_y, max_scroll);
 
@@ -113,10 +89,6 @@ pub fn visible(view: Viewport) Visible {
 }
 
 /// How many columns fit across `width` given their pixel widths.
-///
-/// Returns the first column index and how many to declare. Columns
-/// beyond the right edge are not drawn, which is what keeps a 40-column
-/// `SELECT *` cheap.
 pub fn visibleColumns(widths: []const u16, width: f32, scroll_x: f32) struct { first: usize, count: usize } {
     if (widths.len == 0) return .{ .first = 0, .count = 0 };
 
@@ -144,36 +116,20 @@ pub fn visibleColumns(widths: []const u16, width: f32, scroll_x: f32) struct { f
         cursor += w;
         count += 1;
     }
-    // Always draw at least one column, even in a very narrow window,
-    // or the grid looks empty and the user cannot find the data.
+    // Always draw at least one column, even in a very narrow window, or the grid looks empty and the user cannot find the data.
     if (count == 0) count = 1;
 
     return .{ .first = first, .count = @min(count, widths.len - first) };
 }
 
-/// Clamp a column's width into the allowed range, and never below 1 so
-/// the layout arithmetic cannot divide by zero.
+/// Clamp a column's width into the allowed range, and never below 1 so the layout arithmetic cannot divide by zero.
 pub fn clampColumnWidth(w: u16) u16 {
     if (w < min_column_width) return min_column_width;
     if (w > max_column_width) return max_column_width;
     return w;
 }
 
-/// The pixel width a cell should be drawn at, given the widest value it
-/// contains.
-///
-/// A column of `n` single-character values stays at the minimum so the
-/// grid does not look sparse; a column with a long name grows, up to the
-/// cap. `header` is measured too, because a header longer than its values
-/// would otherwise be clipped by its own column.
-/// Width in pixels for a column whose widest cell is `widest_chars`
-/// characters, at `font_size` px.
-///
-/// An average glyph in the bundled monospace face is about 0.6em, so a
-/// character costs `font_size * 3 / 5` pixels. Integer arithmetic keeps
-/// the result identical on every target, which matters because a column
-/// width that differs by a pixel between platforms makes the grid jitter
-/// when the window is resized.
+/// The pixel width a cell should be drawn at, given the widest value it contains.
 pub fn widthForChars(widest_chars: usize, font_size: u16, cell_padding: u16) u16 {
     const char_px = @as(usize, font_size) * 3 / 5;
     const text_px = widest_chars * @max(char_px, 1);
@@ -196,8 +152,7 @@ pub fn columnWidth(
     return widthForChars(widest, font_size, cell_padding);
 }
 
-/// Rows rendered per frame must stay under the click-registry cap, or
-/// per-row click targets are silently dropped past the limit.
+/// Rows rendered per frame must stay under the click-registry cap, or per-row click targets are silently dropped past the limit.
 pub const max_clickable_rows = 200;
 
 /// True when a row count is safe to give per-row click targets.
@@ -205,9 +160,7 @@ pub fn withinClickBudget(row_count: usize) bool {
     return row_count <= max_clickable_rows;
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 
@@ -258,8 +211,7 @@ test "a negative or NaN scroll does not produce a wild first_row" {
 }
 
 test "scrolling past the end clamps instead of reading out of bounds" {
-    // 200 rows at 22px is 4400px of content, so a 99999px scroll really
-    // is past the end and the window must clamp to the last rows.
+    // 200 rows at 22px is 4400px of content, so a 99999px scroll really is past the end and the window must clamp to the last rows.
     const v = visible(.{ .total_rows = 200, .total_cols = 1, .scroll_y = 99999, .height = 440, .width = 800 });
     try testing.expect(v.first_row + v.row_count <= 200);
     try testing.expect(!v.has_more_below);
@@ -269,8 +221,7 @@ test "scrolling past the end clamps instead of reading out of bounds" {
 }
 
 test "a table shorter than the viewport shows every row and no scroll" {
-    // 10 rows is 220px in a 440px viewport, so it all fits: there is
-    // nothing above and nothing below, and no scroll offset applies.
+    // 10 rows is 220px in a 440px viewport, so it all fits: there is nothing above and nothing below, and no scroll offset applies.
     const v = visible(.{ .total_rows = 10, .total_cols = 1, .scroll_y = 99999, .height = 440, .width = 800 });
     try testing.expectEqual(@as(usize, 0), v.first_row);
     try testing.expectEqual(@as(usize, 10), v.row_count);

@@ -1,23 +1,4 @@
 //! A multi-line SQL editor buffer.
-//!
-//! glinlandui's `input` component is explicitly single-line, printable-ASCII
-//! only, with a flat `[]u8` + `usize` length. An SQL editor is inherently
-//! multi-line, so the buffer is built here — and built as a *pure* module
-//! with no glinlandui types, so it can be tested with no display and no
-//! windowing system at all.
-//!
-//! The design follows the same shape as glinlandui's own single-line
-//! primitives so the two compose predictably:
-//!
-//!   - The buffer is a caller-owned `[]u8` plus a `len`. Nothing here
-//!     allocates, so an editor cannot fail on out-of-memory mid-keystroke.
-//!   - The caret is an offset into that buffer, not a (row, col) pair.
-//!     Multi-line navigation derives lines on demand. A single offset is
-//!     what makes insertion and deletion a contiguous splice.
-//!
-//! Only ASCII is inserted (the key layer produces ASCII), but the buffer
-//! stores bytes opaquely and never assumes a byte is a character, so a
-//! paste of UTF-8 text would still move the caret correctly by byte.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -68,10 +49,6 @@ pub const Span = struct {
 };
 
 /// Edit operations on a caller-owned buffer.
-///
-/// Every function takes `buf` + `*len` rather than a `[]u8` so an
-/// over-long insert is a no-op instead of a slice-length change the
-/// caller has to notice.
 pub const Editor = struct {
     buf: []u8,
     len: usize = 0,
@@ -85,29 +62,23 @@ pub const Editor = struct {
         return self.buf[0..self.len];
     }
 
-    /// Replace the whole contents. Used to load a query or a table's
-    /// `SELECT`.
+    /// Replace the whole contents.
     pub fn setText(self: *Editor, new_text: []const u8) void {
         const n = @min(new_text.len, self.buf.len);
-        // @memmove, not @memcpy: the caller may hand this a slice of the
-        // buffer being set. That is not hypothetical — the picker's Enter
-        // handler does exactly `field.setText(field.text())`, and
-        // @memcpy panics on aliasing rather than quietly copying.
+        // @memmove, not @memcpy: the caller may hand this a slice of the buffer being set.
         @memmove(self.buf[0..n], new_text[0..n]);
         self.len = n;
         self.caret = .{};
     }
 
     /// Insert one byte at the caret, replacing the selection if any.
-    /// Returns false when the buffer is full.
     pub fn insertByte(self: *Editor, c: u8) bool {
         if (self.caret.hasSelection()) {
             _ = self.deleteSelection();
         }
         if (self.len >= self.buf.len) return false;
 
-        // Shift the tail right by one byte, from the back so the copy
-        // does not overlap.
+        // Shift the tail right by one byte, from the back so the copy does not overlap.
         var i = self.len;
         while (i > self.caret.offset) {
             i -= 1;
@@ -119,9 +90,7 @@ pub const Editor = struct {
         return true;
     }
 
-    /// Insert a run of bytes. Stops at capacity rather than failing, so a
-    /// paste into a full buffer leaves the text intact up to the limit.
-    /// Returns the number of bytes actually inserted.
+    /// Insert a run of bytes.
     pub fn insertSlice(self: *Editor, s: []const u8) usize {
         if (self.caret.hasSelection()) _ = self.deleteSelection();
         var written: usize = 0;
@@ -142,8 +111,7 @@ pub const Editor = struct {
         return true;
     }
 
-    /// Delete the byte before the caret (Backspace). A newline is one
-    /// byte, so this joins lines correctly.
+    /// Delete the byte before the caret (Backspace).
     pub fn backspace(self: *Editor) void {
         if (self.deleteSelection()) return;
         if (self.caret.offset == 0) return;
@@ -173,8 +141,7 @@ pub const Editor = struct {
         self.caret.offset = self.len;
     }
 
-    /// Delete the selection, or delete the whole line the caret is on
-    /// when nothing is selected.
+    /// Delete the selection, or delete the whole line the caret is on when nothing is selected.
     pub fn deleteLine(self: *Editor) void {
         if (self.deleteSelection()) return;
         const start = findLineStart(self.buf, 0, self.len, self.caret.offset);
@@ -192,8 +159,7 @@ pub const Editor = struct {
         return findLineStart(self.buf, 0, self.len, offset);
     }
 
-    /// Offset just past the last byte of the line containing `offset`,
-    /// excluding the newline.
+    /// Offset just past the last byte of the line containing `offset`, excluding the newline.
     pub fn lineEnd(self: *const Editor, offset: usize) usize {
         return findLineEnd(self.buf, 0, self.len, offset);
     }
@@ -243,8 +209,7 @@ pub const Editor = struct {
         self.setCaret(self.lineEnd(self.caret.offset), shift);
     }
 
-    /// Move to the start of the previous line. From the middle of a line
-    /// this goes to its start, which is what every text editor does.
+    /// Move to the start of the previous line.
     pub fn moveLineUp(self: *Editor, shift: bool) void {
         const here = self.lineStart(self.caret.offset);
         if (here == 0) {
@@ -257,8 +222,7 @@ pub const Editor = struct {
         self.setCaret(previous + @min(column, prev_len), shift);
     }
 
-    /// Move to the start of the next line, preserving the column where
-    /// possible (a short line clamps rather than jumping to the end).
+    /// Move to the start of the next line, preserving the column where possible (a short line clamps rather than jumping to the end).
     pub fn moveLineDown(self: *Editor, shift: bool) void {
         const here = self.lineStart(self.caret.offset);
         const column = self.caret.offset - here;
@@ -381,8 +345,7 @@ pub fn handleKey(
         else => {},
     }
 
-    // Printable ASCII only. The key layer cannot produce anything else,
-    // and silently inserting a placeholder byte would corrupt the SQL.
+    // Printable ASCII only.
     if (keyChar(keycode, shift)) |c| {
         if (!editor.insertByte(c)) return .ignored;
         return .edited;
@@ -390,8 +353,7 @@ pub fn handleKey(
     return .ignored;
 }
 
-// Raw evdev key codes, matching glinlandui's `input` module so a key
-// handler can be shared between the single-line and multi-line fields.
+// Raw evdev key codes, matching glinlandui's `input` module so a key handler can be shared between the single-line and multi-line fields.
 pub const KEY_TAB: u32 = 15;
 pub const KEY_BACKSPACE: u32 = 14;
 pub const KEY_ENTER: u32 = 28;
@@ -406,26 +368,10 @@ pub const KEY_HOME: u32 = 102;
 pub const KEY_END: u32 = 107;
 pub const KEY_DELETE: u32 = 111;
 pub const KEY_K: u32 = 37;
-// Ctrl+O. Not something the editor itself acts on, but it belongs in
-// the same table as every other code, so one keymap is one list.
+// Ctrl+O.
 pub const KEY_O: u32 = 24;
 
 /// Map a keycode to a printable ASCII byte (US layout), or null.
-///
-/// The codes are Linux **evdev** codes, and the mapping matches
-/// glinlandui's own `input.keyChar` so one key handler can serve both
-/// the single-line field and this multi-line editor.
-///
-/// Two things about evdev are easy to get wrong, and both fail
-/// *silently* -- the keyboard just types the wrong character:
-///
-///   1. Letter codes are not contiguous: `q` is 16, `a` is 30, `z` is
-///      44, and the run 30..38 ends at `l`, not `m`.
-///   2. The digit codes 2..11 are 1..**0**, in that order.
-///
-/// Returning null means "not a character"; the caller must then leave
-/// the buffer alone, because inserting a placeholder byte would corrupt
-/// the SQL.
 pub fn keyChar(keycode: u32, shift: bool) ?u8 {
     // Letters: q..p, a..l, z..m, in evdev order.
     const lower_letters = "qwertyuiopasdfghjklzxcvbnm";
@@ -442,17 +388,14 @@ pub fn keyChar(keycode: u32, shift: bool) ?u8 {
 
     // Digits: evdev 2..11 are 1,2,...,0 -- NOT 0..9.
     if (keycode >= 2 and keycode <= 11) {
-        // evdev 11 is the '0' key, so the run is 1..0 and the last one
-        // does not follow the +1 pattern.
+        // evdev 11 is the '0' key, so the run is 1..0 and the last one does not follow the +1 pattern.
         if (!shift) return if (keycode == 11) '0' else @intCast(keycode - 2 + '1');
         // Shifted 1..0 is  ! @ # $ % ^ & * ( )
         const shifted_digits = [_]u8{ '!', '@', '#', '$', '%', '^', '&', '*', '(', ')' };
         return shifted_digits[keycode - 2];
     }
 
-    // Punctuation. Numeric bytes throughout: a quote inside a string
-    // literal needs escaping, and getting that escaping wrong is a
-    // parse error at best. `shift` picks the third column.
+    // Punctuation.
     const punct = [_]struct { code: u32, plain: u8, shifted: u8 }{
         .{ .code = 12, .plain = 0x2D, .shifted = 0x5F }, // - _
         .{ .code = 13, .plain = 0x3D, .shifted = 0x2B }, // = +
@@ -478,10 +421,6 @@ pub fn keyChar(keycode: u32, shift: bool) ?u8 {
 pub const Keystroke = struct { code: u32, shift: bool };
 
 /// The inverse of `keyChar`: the key that produces `ch`.
-///
-/// Used by the tests to type through the same path a user does, rather
-/// than writing the buffer directly. Without it a test would pass on a
-/// keyboard wired to entirely the wrong letters.
 pub fn keyCodeFor(ch: u8) ?Keystroke {
     if (ch >= 'a' and ch <= 'z') {
         const lower_letters = "qwertyuiopasdfghjklzxcvbnm";
@@ -540,9 +479,7 @@ fn shifted_digit(ch: u8) bool {
     return std.mem.indexOfScalar(u8, &shifted_digits, ch) != null;
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 
@@ -585,8 +522,7 @@ test "a newline makes a second line and backspace joins them" {
     try testing.expectEqual(@as(usize, 2), e.lineCount());
     try testing.expectEqualStrings("SELECT 1\nFROM t", e.text());
 
-    // The '\n' is at offset 8; place the caret just past it and delete,
-    // which is what joining two lines means.
+    // The '\n' is at offset 8; place the caret just past it and delete, which is what joining two lines means.
     const newline_offset = std.mem.indexOfScalar(u8, e.text(), '\n').?;
     e.caret.offset = newline_offset + 1;
     e.backspace();
@@ -606,8 +542,7 @@ test "line navigation" {
     e.moveLineDown(false);
     try testing.expectEqual(@as(usize, 4), e.caret.offset);
     e.moveLineDown(false);
-    // Line 2 is "cc"; the column (0) still fits, so the caret lands at
-    // its start.
+    // Line 2 is "cc"; the column (0) still fits, so the caret lands at its start.
     try testing.expectEqual(@as(usize, 11), e.caret.offset);
     e.moveLineUp(false);
     try testing.expectEqual(@as(usize, 4), e.caret.offset);
@@ -734,9 +669,7 @@ test "movement clamps at both ends" {
 }
 
 test "keyChar maps every letter to its real evdev code" {
-    // The evdev letter codes are NOT contiguous: q=16, a=30, z=44, and
-    // the run 30..38 stops at L, not M. A contiguous assumption types the
-    // wrong letters instead of failing.
+    // The evdev letter codes are NOT contiguous: q=16, a=30, z=44, and the run 30..38 stops at L, not M.
     const cases = [_]struct { ch: u8, code: u32 }{
         .{ .ch = 'q', .code = 16 }, .{ .ch = 'p', .code = 25 },
         .{ .ch = 'a', .code = 30 }, .{ .ch = 'l', .code = 38 },
@@ -754,8 +687,7 @@ test "keyChar maps the digits and the SQL punctuation" {
     try testing.expectEqual(@as(?u8, '!'), keyChar(2, true));
     try testing.expectEqual(@as(?u8, '&'), keyChar(8, true)); // shifted 7
     try testing.expectEqual(@as(?u8, '*'), keyChar(9, true)); // shifted 8
-    // The characters a query actually needs, checked through the
-    // INVERSE so the two tables cannot drift apart in the test itself.
+    // The characters a query actually needs, checked through the INVERSE so the two tables cannot drift apart in the test itself.
     const needed = [_]u8{ ' ', '*', '=', ',', '.', '/', 0x27, '_', '<', '>' };
     for (needed) |ch| {
         const stroke = keyCodeFor(ch) orelse return error.TestUnexpectedResult;
@@ -770,9 +702,7 @@ test "an unmapped key returns null rather than a placeholder" {
 }
 
 test "keyCodeFor is the exact inverse of keyChar" {
-    // The E2E test types through keyCodeFor, so the two must agree for
-    // every character a query uses -- or the test would pass on a
-    // keyboard that types the wrong thing.
+    // The E2E test types through keyCodeFor, so the two must agree for every character a query uses -- or the test would pass on a keyboard that types the.
     const text = "SELECT name, score FROM users WHERE id > 1 AND x <= 2";
     for (text) |ch| {
         const stroke = keyCodeFor(ch) orelse {
@@ -795,8 +725,7 @@ test "keyCodeFor covers upper case and shifted symbols" {
 test "typing through handleKey produces the SQL" {
     var buf: [64]u8 = undefined;
     var e = Editor.init(&buf);
-    // Seed with a slice, then prove the KEY path appends the right byte,
-    // using the shared inverse so the test cannot disagree with keyChar.
+    // Seed with a slice, then prove the KEY path appends the right byte, using the shared inverse so the test cannot disagree with keyChar.
     _ = e.insertSlice("SELE");
     const stroke = keyCodeFor('c') orelse return error.TestUnexpectedResult;
     try testing.expectEqual(handleKey(&e, stroke.code, stroke.shift, false), Action.edited);
@@ -830,38 +759,21 @@ test "setText truncates rather than overflowing" {
     try testing.expectEqualStrings("a much l", e.text());
 }
 
-// ---------------------------------------------------------------------------
 // Rendering
-// ---------------------------------------------------------------------------
 
 /// Copy `text` into `buf`, truncated to fit. Never writes past the end.
 pub fn clampTo(text: []const u8, buf: []u8) []const u8 {
     const n = @min(text.len, buf.len -| 1);
-    // Overlap-tolerant: the destination is a scratch buffer the caller
-    // may have carved out of the very text being copied.
+    // Overlap-tolerant: the destination is a scratch buffer the caller may have carved out of the very text being copied.
     @memmove(buf[0..n], text[0..n]);
     return buf[0..n];
 }
 
 /// Render one editor line with a visible caret, into `buf`.
-///
-/// The result is the line's text with one extra byte inserted at the
-/// caret. A caret sitting on a space is drawn as `_`, because a space
-/// for a caret is invisible and the user cannot tell where they are.
-///
-/// `caret_at` is an offset into `line_text`, or null for "no caret on
-/// this line" (the common case: the caret is on some other line).
-///
-/// This lives here rather than in the draw file because it is pure text
-/// manipulation, and because a test that copies the implementation to
-/// reach it tests nothing at all.
 pub fn renderLineWithCaret(line_text: []const u8, caret_at: ?usize, buf: []u8) []const u8 {
     const at = caret_at orelse return clampTo(line_text, buf);
 
-    // One extra byte for the caret, and it must fit in `buf`. Every
-    // write below is bounded by `cap`; sizing the destination from the
-    // TEXT and then writing past it overflows whenever the text filled
-    // the buffer, which is exactly what a full-width line does.
+    // One extra byte for the caret, and it must fit in `buf`.
     const cap = @min(buf.len, line_text.len + 1);
     if (cap == 0) return buf[0..0];
     const out = buf[0..cap];
@@ -870,9 +782,7 @@ pub fn renderLineWithCaret(line_text: []const u8, caret_at: ?usize, buf: []u8) [
     const head = @min(caret, cap -| 1);
     @memmove(out[0..head], line_text[0..head]);
 
-    // A caret sitting ON a space replaces it: the user sees one cursor,
-    // not a cursor followed by the very space it is sitting on. A caret
-    // anywhere else is inserted BEFORE the character under it.
+    // A caret sitting ON a space replaces it: the user sees one cursor, not a cursor followed by the very space it is sitting on.
     const on_space = caret < line_text.len and line_text[caret] == ' ';
     const consumed = on_space; // was the character at `caret` swallowed?
     if (head < cap) out[head] = if (on_space) '_' else ' ';
@@ -924,9 +834,7 @@ test "no caret just clamps the text" {
 }
 
 test "rendering never writes past the buffer" {
-    // The regression this guards: the destination was sized from the
-    // TEXT length and a trailing NUL was written past it, so any line
-    // that filled the buffer overflowed.
+    // The regression this guards: the destination was sized from the TEXT length and a trailing NUL was written past it, so any line that filled the buffer.
     var tiny: [1]u8 = undefined;
     try testing.expect(renderLineWithCaret("hello world", 3, &tiny).len <= tiny.len);
 

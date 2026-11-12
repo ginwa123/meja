@@ -1,13 +1,4 @@
-//! Application state for the GUI: what is open, what the editor holds,
-//! and what the last query returned.
-//!
-//! Split out from `main.zig` so it carries NO drawing code at all. That
-//! separation is what makes the end-to-end test possible: a test can
-//! drive the real `App` — type a query, press Ctrl+Enter, read the
-//! result — and only `main.zig` knows how to put it on screen.
-//!
-//! Nothing here imports glinlandui except for the two key-modifier
-//! types, which are plain structs.
+//! Application state for the GUI: what is open, what the editor holds, and what the last query returned.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -28,12 +19,7 @@ const dialog = @import("dialog.zig");
 const theme = @import("theme.zig");
 
 /// Which text field owns the keyboard.
-///
-/// The window has two editable fields — the SQL editor and the picker's
-/// path — and a key event goes to exactly one of them, so which is
-/// which is stated rather than inferred from which panel happens to be
-/// open.
-pub const Focus = enum { sql_editor, path };
+pub const Focus = enum { sql_editor, path, tree_search, row_filter, palette };
 
 /// One table in the sidebar, with its columns loaded lazily.
 const TableNode = struct {
@@ -41,9 +27,24 @@ const TableNode = struct {
     kind: schema.ObjectKind,
     expanded: bool = false,
     columns: ?[]schema.Column = null,
-    /// True once loading columns failed, so the tree shows an error
-    /// rather than retrying every frame.
+    /// True once loading columns failed, so the tree shows an error rather than retrying every frame.
     columns_failed: bool = false,
+};
+
+/// One open tab: a table's query, or the user's own.
+pub const Tab = struct {
+    title: []u8,
+    sql: []u8,
+    table_index: ?usize,
+};
+
+/// What a tree row does when clicked.
+pub const TreeAction = union(enum) {
+    connection,
+    folder_tables,
+    folder_views,
+    table: usize,
+    column: usize,
 };
 
 pub const App = struct {
@@ -55,11 +56,6 @@ pub const App = struct {
     db_open: bool = false,
 
     /// The open database's path, and the storage behind it.
-    ///
-    /// It is OWNED rather than borrowed, which it has to be: the path
-    /// now comes from the picker's field, and that field is editable,
-    /// so a slice of it would change under the UI the moment the user
-    /// typed. `db_path` is always a slice of `db_path_buf`, or empty.
     db_path_buf: [picker_mod.path_capacity]u8 = undefined,
     db_path_len: usize = 0,
     db_path: []const u8 = "",
@@ -76,11 +72,6 @@ pub const App = struct {
     has_result: bool = false,
 
     /// The status line, and the storage behind it.
-    ///
-    /// Owned for the same reason `db_path` is: it is handed to a draw
-    /// command that keeps the pointer until the frame is rasterised, and
-    /// it used to be built by `dupe`-ing onto the heap with nothing
-    /// ever freeing it. `status` is always a slice of `status_buf`.
     status_buf: [256]u8 = undefined,
     status: []const u8 = "",
 
@@ -90,19 +81,7 @@ pub const App = struct {
     // Editor.
     sql_buf: [16 * 1024]u8 = undefined,
 
-    /// Scratch space for every string handed to a draw command in one
-    /// frame.
-    ///
-    /// This exists because the draw calls are IMMEDIATE MODE: a
-    /// `text.label` call stores the pointer it is given and the
-    /// rasteriser reads it later in the same frame, after the function
-    /// that produced it has already returned. A label fed a pointer
-    /// into a stack buffer therefore points at dead memory by the time
-    /// anything looks at it -- the text silently renders empty.
-    ///
-    /// So every label's text is written here instead, and the arena is
-    /// reset once per frame. That makes the text live exactly as long as
-    /// the frame that needs it, with no allocation.
+    /// Scratch space for every string handed to a draw command in one frame.
     text_arena: [512 * 1024]u8 = undefined,
     text_used: usize = 0,
     ed: editor.Editor = undefined,
@@ -111,22 +90,49 @@ pub const App = struct {
     picker: picker_mod.Picker = undefined,
     focus: Focus = .sql_editor,
 
+    // Tree search.
+    tree_search_buf: [64]u8 = undefined,
+    tree_search_ed: editor.Editor = undefined,
+    tree_search: []const u8 = "",
+
+    // Row filter, pagination and sort.
+    filter_buf: [128]u8 = undefined,
+    filter_ed: editor.Editor = undefined,
+    filter: []const u8 = "",
+    page: usize = 0,
+    sort_col: ?usize = null,
+    sort_dir: i8 = 0,
+    /// Display order: result row indices after the filter and the sort.
+    row_order: std.ArrayList(usize) = .empty,
+
+    // Tabs: one per opened table.
+    tabs: std.ArrayList(Tab) = .empty,
+    active_tab: usize = 0,
+
+    // Tree rows, rebuilt each frame from the schema and the search.
+    tree_rows: std.ArrayList(glin.components.tree.Row) = .empty,
+    tree_actions: std.ArrayList(TreeAction) = .empty,
+
+    // The tab bar's view of `tabs`, rebuilt each frame.
+    tab_views: std.ArrayList(glin.components.tabs.Tab) = .empty,
+
+    // Command palette.
+    palette_open: bool = false,
+    palette_buf: [64]u8 = undefined,
+    palette_ed: editor.Editor = undefined,
+    palette: []const u8 = "",
+    palette_idx: usize = 0,
+
     // Cached layout metrics, refreshed each frame.
     window_w: u32 = 0,
     window_h: u32 = 0,
 
-    /// Reset the text arena. Called once at the start of each frame,
-    /// before anything claims space.
+    /// Reset the text arena.
     pub fn beginFrame(self: *App) void {
         self.text_used = 0;
     }
 
     /// Claim `n` bytes of frame-scoped scratch.
-    ///
-    /// Returns a zero-length slice rather than failing when the arena is
-    /// exhausted: a cell that runs out of room draws blank, which is a
-    /// cosmetic problem, whereas panicking mid-frame would take down the
-    /// window. A `ResultSet` wider than ~500 columns would hit this.
     pub fn claimText(self: *App, n: usize) []u8 {
         if (self.text_used + n > self.text_arena.len) return &[_]u8{};
         const start = self.text_used;
@@ -135,33 +141,19 @@ pub const App = struct {
     }
 
     /// Initialise IN PLACE.
-    ///
-    /// This deliberately does not return an `App` by value. The editor
-    /// holds a slice of `sql_buf`, a field of this very struct, so
-    /// returning a copy would leave `ed.buf` pointing into the local
-    /// that was copied FROM -- dead memory the moment the function
-    /// returned. The first keystroke would then write into freed stack,
-    /// which is exactly the crash this signature exists to prevent.
-    ///
-    /// `App.init(allocator, io)` looked correct and compiled; nothing
-    /// about the type system flagged it.
     pub fn init(self: *App, gpa: Allocator, io: Io) void {
         self.* = .{ .gpa = gpa, .io = io };
-        // Bound to `sql_buf` AFTER the struct is in its final place, so
-        // the pointer refers to the App the caller actually holds.
+        // Bound to `sql_buf` AFTER the struct is in its final place, so the pointer refers to the App the caller actually holds.
         self.ed = editor.Editor.init(&self.sql_buf);
+        self.tree_search_ed = editor.Editor.init(&self.tree_search_buf);
+        self.filter_ed = editor.Editor.init(&self.filter_buf);
+        self.palette_ed = editor.Editor.init(&self.palette_buf);
         // Same rule for the picker's own field buffer.
         self.picker.init();
         self.setStatus("no database open — Ctrl+O to choose one", .{});
     }
 
     /// Write the status line.
-    ///
-    /// Truncates rather than failing: a status line that is a character
-    /// short of a full error is still useful, and a UI thread must not
-    /// unwind out of a key handler. `status` always points into
-    /// `status_buf`, so it outlives the call that produced it and never
-    /// has to be freed.
     pub fn setStatus(self: *App, comptime fmt: []const u8, args: anytype) void {
         self.status = std.fmt.bufPrint(self.status_buf[0..], fmt, args) catch
             self.status_buf[0..0];
@@ -176,8 +168,7 @@ pub const App = struct {
         self.freeTables();
         self.clearResult();
 
-        // `init` takes a NUL-terminated path because it is handed to
-        // sqlite3_open; a slice from argv is not sentinel-terminated.
+        // `init` takes a NUL-terminated path because it is handed to sqlite3_open; a slice from argv is not sentinel-terminated.
         const zpath = self.gpa.dupeZ(u8, path) catch {
             self.setStatus("out of memory", .{});
             return;
@@ -186,12 +177,9 @@ pub const App = struct {
 
         self.db.init(self.io, zpath) catch |err| {
             self.open_error = err;
-            // Say WHICH path failed, not just that something did. The
-            // path is the only thing the user can act on.
+            // Say WHICH path failed, not just that something did.
             self.setStatus("cannot open {s}: {s}", .{ path, @errorName(err) });
-            // Leave the previous path alone: it is still what the
-            // window is showing, and clearing it would make a failed
-            // switch look like a closed database.
+            // Leave the previous path alone: it is still what the window is showing, and clearing it would make a failed switch look like a closed database.
             return;
         };
         self.db_open = true;
@@ -202,10 +190,6 @@ pub const App = struct {
     }
 
     /// Copy the open database's path into storage the App owns.
-    ///
-    /// The copy is the point: the caller's slice may be argv, the
-    /// picker's field, or a scratch buffer, and only this one is
-    /// guaranteed to still hold the same bytes when the UI reads it.
     fn setDbPath(self: *App, path: []const u8) void {
         const n = @min(path.len, self.db_path_buf.len);
         // Overlap-tolerant, in case a caller passes `self.db_path` back in.
@@ -214,33 +198,17 @@ pub const App = struct {
         self.db_path = self.db_path_buf[0..n];
     }
 
-    // --- database selection ------------------------------------------------
-    //
-    // The one thing a database browser must let a user do is point it
-    // at a different database. Until the picker existed the only way to
-    // change it was to restart the process with a different argument,
-    // which is not a way to browse.
+    // --- database selection ------------------------------------------------ The one thing a database browser must let a user do is point it at a.
 
     /// Show the picker and put the keyboard in the path field.
-    ///
-    /// Reopening starts from what is already open rather than from the
-    /// process directory, so the user is not dropped somewhere new every
-    /// time they look.
     pub fn openPicker(self: *App) void {
         self.picker.open = true;
         self.focus = .path;
 
-        // The field starts EMPTY, deliberately. Seeding it with the open
-        // database's path means the first character the user types is
-        // APPENDED to it, so typing `/data/app.db` into a field that
-        // already said `:memory:` silently produced
-        // `:memory:/data/app.db` and a baffling "cannot open". An empty
-        // field has no wrong answer.
+        // The field starts EMPTY, deliberately.
         self.picker.field.clear();
 
-        // The listing, by contrast, starts where the user already is: the
-        // directory holding the open database. That is the one piece of
-        // context worth carrying over.
+        // The listing, by contrast, starts where the user already is: the directory holding the open database.
         if (self.picker.dir_len == 0 and self.db_open and self.db_path.len > 0) {
             const parent = picker_mod.parentOf(self.db_path);
             if (picker_mod.Picker.isDirectory(self.io, parent)) self.picker.setDir(parent);
@@ -253,27 +221,8 @@ pub const App = struct {
     }
 
     /// Ask the SYSTEM file dialog for a database, and open what it returns.
-    ///
-    /// The other way to point the app at a database, next to `openPicker`'s
-    /// hand-rolled one. Which is primary depends on the host: on a desktop
-    /// this is the button people reach for, because it is the dialog their
-    /// operating system already taught them; the picker is what still works
-    /// when there is no system dialog at all, and what the GUI tests drive,
-    /// because a test cannot click a native dialog.
-    ///
-    /// It blocks while the dialog is open. That is what a file dialog IS —
-    /// AppKit, COM and the XDG portal all run their own modal loop — and the
-    /// window is frozen for the duration by design, not by accident. The one
-    /// consequence here is that this cannot be called from anywhere that
-    /// expects the app to keep repainting.
     pub fn browseForDatabase(self: *App) void {
-        // Start where the user already is: the directory of the open
-        // database, or the picker's if it has one. Null when there is
-        // nowhere obvious — `:memory:` has no parent directory, and
-        // "the current directory" of a GUI process is whatever the user
-        // launched it from, which is rarely where their data is. The
-        // platform's own default (a home directory) is the better guess
-        // when we have none.
+        // Start where the user already is: the directory of the open database, or the picker's if it has one.
         const start: ?[]const u8 = blk: {
             if (self.picker.dir_len > 0) break :blk self.picker.dir();
             if (self.db_open and self.db_path.len > 0 and
@@ -284,14 +233,10 @@ pub const App = struct {
             break :blk null;
         };
 
-        // `browse` is fallible only because the toolkit's is, and on this
-        // target it is always `Unsupported` — which is the case the GUI tests
-        // exercise and the one a browser hits.
+        // `browse` is fallible only because the toolkit's is, and on this target it is always `Unsupported` — which is the case the GUI tests exercise and the.
         const outcome = dialog.browse(self.gpa, start) catch
             dialog.Outcome{ .unavailable = .failed };
-        // The path is a COPY the outcome owns, so it is released here. It is
-        // copied again by `usePath` into storage the App owns, which is what
-        // makes it safe to free at the end of this scope.
+        // The path is a COPY the outcome owns, so it is released here.
         defer outcome.free(self.gpa);
 
         switch (outcome) {
@@ -300,15 +245,11 @@ pub const App = struct {
                     self.setStatus("the file dialog returned an empty path", .{});
                     return;
                 }
-                // Through `usePath`, like every other route to a database,
-                // so "what Browse opens" and "what a clicked row opens"
-                // cannot drift apart.
+                // Through `usePath`, like every other route to a database, so "what Browse opens" and "what a clicked row opens" cannot drift apart.
                 self.usePath(path);
             },
             .cancelled => {
-                // The user closed the window on purpose. Say so briefly and
-                // change nothing: the previously open database is still open,
-                // and clearing it would make a cancel look like a close.
+                // The user closed the window on purpose.
                 self.setStatus("browse cancelled — still on {s}", .{if (self.db_open) self.db_path else "nothing"});
             },
             .unavailable => |limit| {
@@ -348,17 +289,14 @@ pub const App = struct {
         self.enterDirectory(parent);
     }
 
-    /// Act on a clicked listing row: a directory is entered, a file
-    /// opened. The keyboard's Up/Down + Enter land here too, so the two
-    /// input methods cannot disagree.
+    /// Act on a clicked listing row: a directory is entered, a file opened.
     pub fn activateCandidate(self: *App, index: usize) void {
         const p = &self.picker;
         if (index >= p.entries.items.len) return;
         p.cursor = index;
         const entry = p.entries.items[index];
 
-        // ".." is a navigation row, not a real one: joining it onto the
-        // directory would produce a path that does not name anything.
+        // ".." is a navigation row, not a real one: joining it onto the directory would produce a path that does not name anything.
         if (std.mem.eql(u8, entry.name, "..")) {
             self.goUp();
             return;
@@ -371,9 +309,7 @@ pub const App = struct {
         self.usePath(full);
     }
 
-    /// Open, or — for a directory — enter, whatever is in the path
-    /// field. Trimmed first because a trailing newline is what a field
-    /// collects from a paste.
+    /// Open, or — for a directory — enter, whatever is in the path field.
     pub fn openTypedPath(self: *App) void {
         const typed = std.mem.trim(u8, self.picker.field.text(), " \t\r\n");
         if (typed.len == 0) {
@@ -383,13 +319,9 @@ pub const App = struct {
         self.usePath(typed);
     }
 
-    /// The one place a path becomes the open database, or the listed
-    /// directory. Both the typed field and a clicked row come through
-    /// here, so "what Enter does" and "what clicking does" cannot drift
-    /// apart.
+    /// The one place a path becomes the open database, or the listed directory.
     pub fn usePath(self: *App, path: []const u8) void {
-        // A directory cannot be opened as a database, and reporting that
-        // as an error would be a lie: it is navigation, so it navigates.
+        // A directory cannot be opened as a database, and reporting that as an error would be a lie: it is navigation, so it navigates.
         if (picker_mod.Picker.isDirectory(self.io, path)) {
             self.picker.field.setText(path);
             self.enterDirectory(path);
@@ -400,8 +332,7 @@ pub const App = struct {
         if (!self.db_open) return; // `open` already said what went wrong.
 
         self.picker.field.setText(self.db_path);
-        // Follow the database into its own directory, so reopening the
-        // panel starts where the user now is.
+        // Follow the database into its own directory, so reopening the panel starts where the user now is.
         self.enterDirectory(picker_mod.parentOf(self.db_path));
         self.closePicker();
     }
@@ -425,6 +356,9 @@ pub const App = struct {
         }
         self.col_widths.deinit(self.gpa);
         self.col_widths = .empty;
+        self.row_order.deinit(self.gpa);
+        self.row_order = .empty;
+        self.page = 0;
     }
 
     pub fn loadTables(self: *App) void {
@@ -443,8 +377,7 @@ pub const App = struct {
         }
     }
 
-    /// Run whatever is in the editor. The core splits multi-statement
-    /// scripts, so a script with three statements runs all three.
+    /// Run whatever is in the editor.
     pub fn runEditor(self: *App) void {
         if (!self.db_open) {
             self.setStatus("no database open — Ctrl+O to choose one", .{});
@@ -462,8 +395,7 @@ pub const App = struct {
         };
         defer sql.freeStatements(self.gpa, statements);
 
-        // Only the LAST statement's result is shown, which matches what
-        // the sqlite3 CLI does: a script's final SELECT is the answer.
+        // Only the LAST statement's result is shown, which matches what the sqlite3 CLI does: a script's final SELECT is the answer.
         for (statements) |st| {
             self.clearResult();
             self.result = query.run(self.gpa, &self.db, st.text, .{}) catch {
@@ -472,10 +404,7 @@ pub const App = struct {
             };
             self.has_result = true;
             if (self.result.error_message) |m| {
-                // COPIED, not borrowed. The result set is deinited on the
-                // next run and on every database switch, so a status
-                // line pointing into it would outlive the memory it
-                // names.
+                // COPIED, not borrowed.
                 self.setStatus("{s}", .{m});
             } else if (self.result.columnCount() == 0) {
                 self.setStatus("{d} rows affected", .{self.result.rows_affected});
@@ -484,10 +413,10 @@ pub const App = struct {
             }
             self.recomputeColumnWidths();
         }
+        self.rebuildRowOrder();
     }
 
-    /// Size each column to its widest cell. Only the rows actually
-    /// loaded are measured, which is the same set the grid draws.
+    /// Size each column to its widest cell.
     pub fn recomputeColumnWidths(self: *App) void {
         self.col_widths.deinit(self.gpa);
         self.col_widths = .empty;
@@ -495,9 +424,7 @@ pub const App = struct {
 
         const width = self.result.columnCount();
         for (0..width) |c| {
-            // Measure a bounded sample: measuring 200k rows to size a
-            // column is exactly the kind of work that makes a browser
-            // feel broken, and the width barely changes past a few dozen.
+            // Measure a bounded sample: measuring 200k rows to size a column is exactly the kind of work that makes a browser feel broken, and the width barely.
             var samples: std.ArrayList([]const u8) = .empty;
             defer {
                 for (samples.items) |s| self.gpa.free(s);
@@ -542,8 +469,7 @@ pub const App = struct {
         self.selected = index;
         const t = &self.tables.items[index];
 
-        // The editor gets a plain `SELECT *`, which is the query a user
-        // would have written, so they can edit it into something else.
+        // The editor gets a plain `SELECT *`, which is the query a user would have written, so they can edit it into something else.
         const quoted = sql.quoteIfNeeded(self.gpa, t.name) catch return;
         defer self.gpa.free(quoted);
         const seed = std.fmt.allocPrint(self.gpa, "SELECT * FROM {s}", .{quoted}) catch return;
@@ -553,20 +479,452 @@ pub const App = struct {
         self.runEditor();
     }
 
+    // --- tabs ---------------------------------------------------------------
+
+    /// Open the first table in a tab, so the window is never an empty editor on a database that has one.
+    pub fn openFirstTable(self: *App) void {
+        if (self.tables.items.len > 0) self.openTableTab(0);
+    }
+
+    /// Open a table in a tab, or switch to the tab that already holds it.
+    pub fn openTableTab(self: *App, index: usize) void {
+        if (index >= self.tables.items.len) return;
+        self.saveActiveTab();
+
+        for (self.tabs.items, 0..) |t, i| {
+            if (t.table_index) |ti| {
+                if (ti == index) {
+                    self.active_tab = i;
+                    self.selected = index;
+                    self.loadActiveTab();
+                    return;
+                }
+            }
+        }
+
+        const t = &self.tables.items[index];
+        const quoted = sql.quoteIfNeeded(self.gpa, t.name) catch return;
+        defer self.gpa.free(quoted);
+        const seed = std.fmt.allocPrint(self.gpa, "SELECT * FROM {s}", .{quoted}) catch return;
+        const title = self.gpa.dupe(u8, t.name) catch {
+            self.gpa.free(seed);
+            return;
+        };
+        self.tabs.append(self.gpa, .{
+            .title = title,
+            .sql = seed,
+            .table_index = index,
+        }) catch {
+            self.gpa.free(title);
+            self.gpa.free(seed);
+            return;
+        };
+        self.active_tab = self.tabs.items.len - 1;
+        self.selected = index;
+        self.loadActiveTab();
+    }
+
+    /// Copy the editor's text into the active tab, so switching away does not lose it.
+    fn saveActiveTab(self: *App) void {
+        if (self.active_tab >= self.tabs.items.len) return;
+        const t = &self.tabs.items[self.active_tab];
+        const copy = self.gpa.dupe(u8, self.ed.text()) catch return;
+        self.gpa.free(t.sql);
+        t.sql = copy;
+    }
+
+    /// Load the active tab's SQL into the editor and run it.
+    fn loadActiveTab(self: *App) void {
+        if (self.active_tab >= self.tabs.items.len) return;
+        const t = &self.tabs.items[self.active_tab];
+        self.ed.setText(t.sql);
+        self.runEditor();
+    }
+
+    /// Switch to a tab by index.
+    pub fn switchTab(self: *App, i: usize) void {
+        if (i >= self.tabs.items.len or i == self.active_tab) return;
+        self.saveActiveTab();
+        self.active_tab = i;
+        self.selected = self.tabs.items[i].table_index;
+        self.loadActiveTab();
+    }
+
+    /// Close a tab and fall back to its neighbour.
+    pub fn closeTab(self: *App, i: usize) void {
+        if (i >= self.tabs.items.len) return;
+        const t = self.tabs.items[i];
+        self.gpa.free(t.title);
+        self.gpa.free(t.sql);
+        _ = self.tabs.orderedRemove(i);
+
+        if (self.tabs.items.len == 0) {
+            self.active_tab = 0;
+            self.selected = null;
+            self.ed.setText("");
+            self.clearResult();
+            return;
+        }
+        if (i < self.active_tab) self.active_tab -= 1;
+        if (self.active_tab >= self.tabs.items.len) self.active_tab = self.tabs.items.len - 1;
+        self.selected = self.tabs.items[self.active_tab].table_index;
+        self.loadActiveTab();
+    }
+
+    pub fn freeTabs(self: *App) void {
+        for (self.tabs.items) |t| {
+            self.gpa.free(t.title);
+            self.gpa.free(t.sql);
+        }
+        self.tabs.deinit(self.gpa);
+        self.tabs = .empty;
+        self.active_tab = 0;
+    }
+
+    // --- tree ---------------------------------------------------------------
+
+    /// A frame-scoped element id, e.g. `grid.cell.3`. The arena resets each frame, so the id lives exactly as long as the draw command that uses it.
+    pub fn cellId(self: *App, prefix: []const u8, i: usize) []const u8 {
+        const buf = self.claimText(48);
+        return std.fmt.bufPrint(buf, "{s}.{d}", .{ prefix, i }) catch prefix;
+    }
+
+    /// A frame-scoped element id with two indices, e.g. `grid.cell.3.1`.
+    pub fn cellId2(self: *App, prefix: []const u8, a: usize, b: usize) []const u8 {
+        const buf = self.claimText(64);
+        return std.fmt.bufPrint(buf, "{s}.{d}.{d}", .{ prefix, a, b }) catch prefix;
+    }
+
+    /// Rebuild the tab bar's view of `tabs`. Call once per frame, after `beginFrame`.
+    pub fn rebuildTabViews(self: *App) void {
+        self.tab_views.clearRetainingCapacity();
+        for (self.tabs.items, 0..) |t, i| {
+            self.tab_views.append(self.gpa, .{
+                .label = t.title,
+                .active = i == self.active_tab,
+                .closable = true,
+                .accent = if (t.table_index != null) theme.accent else null,
+            }) catch return;
+        }
+    }
+
+    /// Rebuild the tree rows from the schema and the search. Call once per frame, after `beginFrame`.
+    pub fn rebuildTree(self: *App) void {
+        self.tree_rows.clearRetainingCapacity();
+        self.tree_actions.clearRetainingCapacity();
+
+        const q = self.tree_search;
+        const conn = if (self.db_open) std.fs.path.basename(self.db_path) else "no database";
+        self.pushRow(.{
+            .label = conn,
+            .depth = 0,
+            .has_children = true,
+            .expanded = true,
+            .kind = .group,
+            .meta = if (self.db_open) "SQLite" else "",
+        }, .connection);
+
+        var tables: usize = 0;
+        var views: usize = 0;
+        for (self.tables.items) |t| {
+            if (!containsIgnoreCase(t.name, q)) continue;
+            if (t.kind == .view) views += 1 else tables += 1;
+        }
+
+        self.pushRow(.{
+            .label = "Tables",
+            .depth = 1,
+            .has_children = true,
+            .expanded = true,
+            .kind = .group,
+            .meta = self.countText(tables),
+        }, .folder_tables);
+        self.pushTablesOfKind(q, .table);
+
+        if (views > 0) {
+            self.pushRow(.{
+                .label = "Views",
+                .depth = 1,
+                .has_children = true,
+                .expanded = true,
+                .kind = .group,
+                .meta = self.countText(views),
+            }, .folder_views);
+            self.pushTablesOfKind(q, .view);
+        }
+    }
+
+    fn pushTablesOfKind(self: *App, q: []const u8, kind: schema.ObjectKind) void {
+        for (self.tables.items, 0..) |t, i| {
+            if (t.kind != kind) continue;
+            if (!containsIgnoreCase(t.name, q)) continue;
+            self.pushRow(.{
+                .label = t.name,
+                .depth = 2,
+                .has_children = true,
+                .expanded = t.expanded,
+                .selected = self.selected == i,
+                .kind = .item,
+            }, .{ .table = i });
+            if (t.expanded) self.pushColumns(i);
+        }
+    }
+
+    fn pushColumns(self: *App, table_index: usize) void {
+        const t = &self.tables.items[table_index];
+        const cols = t.columns orelse return;
+        for (cols) |c| {
+            self.pushRow(.{
+                .label = c.name,
+                .depth = 3,
+                .has_children = false,
+                .kind = .leaf,
+                .meta = c.declared_type,
+            }, .{ .column = table_index });
+        }
+    }
+
+    fn pushRow(self: *App, row: glin.components.tree.Row, action: TreeAction) void {
+        self.tree_rows.append(self.gpa, row) catch return;
+        self.tree_actions.append(self.gpa, action) catch {
+            _ = self.tree_rows.pop();
+        };
+    }
+
+    fn countText(self: *App, n: usize) []const u8 {
+        const buf = self.claimText(16);
+        return std.fmt.bufPrint(buf, "{d}", .{n}) catch "";
+    }
+
+    /// Act on a clicked tree row.
+    pub fn onTreeSelect(self: *App, row_index: usize) void {
+        if (row_index >= self.tree_actions.items.len) return;
+        switch (self.tree_actions.items[row_index]) {
+            .connection, .folder_tables, .folder_views => {},
+            .table => |i| {
+                self.toggleTable(i);
+                self.openTableTab(i);
+            },
+            .column => |i| self.openTableTab(i),
+        }
+    }
+
+    // --- tree search, filter, sort, pagination, palette ---------------------
+
+    /// Rows per page in the grid.
+    pub const page_size: usize = 25;
+
+    /// Case-insensitive substring test, ASCII only — enough for table names and cell text.
+    pub fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+        if (needle.len == 0) return true;
+        if (needle.len > haystack.len) return false;
+        var i: usize = 0;
+        while (i + needle.len <= haystack.len) : (i += 1) {
+            if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
+        }
+        return false;
+    }
+
+    /// Set the tree's search text.
+    pub fn setTreeSearch(self: *App, text: []const u8) void {
+        self.tree_search_ed.setText(text);
+        self.tree_search = self.tree_search_ed.text();
+    }
+
+    /// Set the grid's row filter and rebuild the display order.
+    pub fn setFilter(self: *App, text: []const u8) void {
+        self.filter_ed.setText(text);
+        self.syncFilter();
+    }
+
+    /// Re-read the filter from its editor and rebuild the display order.
+    pub fn syncFilter(self: *App) void {
+        self.filter = self.filter_ed.text();
+        self.page = 0;
+        self.rebuildRowOrder();
+    }
+
+    /// Set the palette's query text.
+    pub fn setPalette(self: *App, text: []const u8) void {
+        self.palette_ed.setText(text);
+        self.palette = self.palette_ed.text();
+        self.palette_idx = 0;
+    }
+
+    pub fn openPalette(self: *App) void {
+        self.palette_open = true;
+        self.focus = .palette;
+        self.setPalette("");
+    }
+
+    pub fn closePalette(self: *App) void {
+        self.palette_open = false;
+        self.focus = .sql_editor;
+    }
+
+    /// How many tables match the palette's query.
+    pub fn paletteMatchCount(self: *App) usize {
+        var n: usize = 0;
+        for (self.tables.items) |t| {
+            if (containsIgnoreCase(t.name, self.palette)) n += 1;
+        }
+        return n;
+    }
+
+    /// The table index of the `i`th palette match.
+    pub fn paletteMatchAt(self: *App, i: usize) ?usize {
+        var n: usize = 0;
+        for (self.tables.items, 0..) |t, idx| {
+            if (!containsIgnoreCase(t.name, self.palette)) continue;
+            if (n == i) return idx;
+            n += 1;
+        }
+        return null;
+    }
+
+    /// Cycle a column's sort: ascending, descending, off.
+    pub fn setSort(self: *App, col: usize) void {
+        if (self.sort_col) |c| {
+            if (c == col) {
+                if (self.sort_dir == 1) {
+                    self.sort_dir = -1;
+                } else if (self.sort_dir == -1) {
+                    self.sort_col = null;
+                    self.sort_dir = 0;
+                } else {
+                    self.sort_dir = 1;
+                }
+            } else {
+                self.sort_col = col;
+                self.sort_dir = 1;
+            }
+        } else {
+            self.sort_col = col;
+            self.sort_dir = 1;
+        }
+        self.page = 0;
+        self.rebuildRowOrder();
+    }
+
+    /// Move to a page, clamped.
+    pub fn setPage(self: *App, page: usize) void {
+        const pages = self.pageCount();
+        self.page = @min(page, pages - 1);
+    }
+
+    /// How many pages the filtered result has. Always at least one, so the pager never reads "0 of 0".
+    pub fn pageCount(self: *App) usize {
+        const n = self.row_order.items.len;
+        if (n == 0) return 1;
+        return (n + page_size - 1) / page_size;
+    }
+
+    /// How many rows the current page holds.
+    pub fn pageRowCount(self: *App) usize {
+        const start = self.page * page_size;
+        if (start >= self.row_order.items.len) return 0;
+        return @min(page_size, self.row_order.items.len - start);
+    }
+
+    /// The result row index shown at `display_index` on the current page.
+    pub fn pageRowAt(self: *App, display_index: usize) ?usize {
+        const i = self.page * page_size + display_index;
+        if (i >= self.row_order.items.len) return null;
+        return self.row_order.items[i];
+    }
+
+    /// Recompute the display order from the filter and the sort.
+    pub fn rebuildRowOrder(self: *App) void {
+        self.row_order.deinit(self.gpa);
+        self.row_order = .empty;
+        if (!self.has_result) return;
+
+        const total = self.result.rowCount();
+        self.row_order.ensureTotalCapacity(self.gpa, total) catch return;
+        for (0..total) |i| {
+            if (self.filter.len > 0 and !self.rowMatches(i)) continue;
+            self.row_order.appendAssumeCapacity(i);
+        }
+
+        if (self.sort_col) |col| {
+            if (self.sort_dir != 0) {
+                std.mem.sort(usize, self.row_order.items, SortCtx{
+                    .app = self,
+                    .col = col,
+                    .dir = self.sort_dir,
+                }, SortCtx.lessThan);
+            }
+        }
+
+        const pages = self.pageCount();
+        if (self.page >= pages) self.page = pages - 1;
+    }
+
+    /// True when any cell in the row contains the filter text.
+    fn rowMatches(self: *App, row_index: usize) bool {
+        if (row_index >= self.result.rows.len) return false;
+        const row = self.result.rows[row_index];
+        var buf: [256]u8 = undefined;
+        for (row.values) |v| {
+            const shown = if (v.isNull()) "NULL" else value_mod.render(&buf, v);
+            if (containsIgnoreCase(shown, self.filter)) return true;
+        }
+        return false;
+    }
+
+    /// Sort context: the app, the column, and the direction.
+    const SortCtx = struct {
+        app: *App,
+        col: usize,
+        dir: i8,
+
+        fn lessThan(ctx: SortCtx, a: usize, b: usize) bool {
+            const cmp = ctx.app.compareRows(a, b, ctx.col);
+            return if (ctx.dir > 0) cmp < 0 else cmp > 0;
+        }
+    };
+
+    /// Compare two result rows on one column. NULLs sort last in both directions.
+    fn compareRows(self: *App, a: usize, b: usize, col: usize) i8 {
+        if (a >= self.result.rows.len or b >= self.result.rows.len) return 0;
+        const ra = self.result.rows[a];
+        const rb = self.result.rows[b];
+        if (col >= ra.values.len or col >= rb.values.len) return 0;
+
+        const va = ra.values[col];
+        const vb = rb.values[col];
+        if (va.isNull() and vb.isNull()) return 0;
+        if (va.isNull()) return 1;
+        if (vb.isNull()) return -1;
+
+        var ba: [64]u8 = undefined;
+        var bb: [64]u8 = undefined;
+        const sa = value_mod.render(&ba, va);
+        const sb = value_mod.render(&bb, vb);
+
+        // Numbers compare as numbers, so 9 sorts before 10 rather than after it.
+        const na = std.fmt.parseFloat(f64, sa) catch null;
+        const nb = std.fmt.parseFloat(f64, sb) catch null;
+        if (na != null and nb != null) {
+            if (na.? < nb.?) return -1;
+            if (na.? > nb.?) return 1;
+            return 0;
+        }
+        return switch (std.mem.order(u8, sa, sb)) {
+            .lt => -1,
+            .eq => 0,
+            .gt => 1,
+        };
+    }
+
     /// Route one key event.
-    ///
-    /// Ctrl+O is the only global shortcut — it opens the picker and puts
-    /// the keyboard in the path field, and closes it again. Everything
-    /// else goes to whichever field `focus` names, because the window
-    /// has two of them and a keystroke may only have one meaning.
     pub fn onKey(self: *App, mods: input_mod.Mods, keycode: u32) bool {
         if (mods.ctrl and keycode == editor.KEY_O) {
             if (self.picker.open) self.closePicker() else self.openPicker();
             return true;
         }
         if (self.focus == .path) return self.onPathKey(mods, keycode);
-        // The picker is open but the editor has the keyboard: Tab is how
-        // the user gets to the path field without reaching for the mouse.
+        // The picker is open but the editor has the keyboard: Tab is how the user gets to the path field without reaching for the mouse.
         if (self.picker.open and keycode == editor.KEY_TAB) {
             self.focus = .path;
             return true;
@@ -586,11 +944,6 @@ pub const App = struct {
     }
 
     /// Keys for the picker's path field.
-    ///
-    /// Enter and the arrow keys are taken BEFORE the shared editor
-    /// handler, because the sensible meanings here are not the editor's:
-    /// a path has no lines to break, and Up/Down through a listing is
-    /// more use than moving a caret through a single-line string.
     fn onPathKey(self: *App, mods: input_mod.Mods, keycode: u32) bool {
         switch (keycode) {
             editor.KEY_ENTER => {
@@ -611,9 +964,7 @@ pub const App = struct {
             },
             else => {},
         }
-        // Everything else — typing, Backspace, Home/End, selection — is
-        // exactly what the SQL editor does, so it is literally the same
-        // handler and the same editor type.
+        // Everything else — typing, Backspace, Home/End, selection — is exactly what the SQL editor does, so it is literally the same handler and the same.
         return switch (editor.handleKey(&self.picker.field, keycode, mods.shift, mods.ctrl)) {
             .run_requested, .edited => true,
             .ignored => false,

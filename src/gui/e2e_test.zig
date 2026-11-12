@@ -1,12 +1,4 @@
 //! End-to-end tests for the GUI: type a query, run it, see the output.
-//!
-//! These drive the REAL `App` from `app.zig` — the same struct the window
-//! runs — and then render through glinlandui's headless `Driver`, so the
-//! assertions cover the whole path: keystroke -> editor buffer ->
-//! query engine -> result set -> draw commands.
-//!
-//! A test that only checked `App.result` would pass even if the grid
-//! rendered blanks, which is exactly the bug this file exists to catch.
 
 const std = @import("std");
 const ui = @import("glinlandui");
@@ -31,9 +23,7 @@ const Harness = struct {
     driver: Driver,
 
     fn init(gpa: std.mem.Allocator) !Harness {
-        // page_allocator throughout: Clay keeps a global pointer into its
-        // arena and never frees it, so the leak detector would fire on a
-        // correct program.
+        // page_allocator throughout: Clay keeps a global pointer into its arena and never frees it, so the leak detector would fire on a correct program.
         var threaded: std.Io.Threaded = .init(gpa, .{});
         errdefer threaded.deinit();
 
@@ -60,20 +50,13 @@ const Harness = struct {
         self.app.clearResult();
         self.app.freeTables();
         if (self.app.db_open) self.app.db.deinit();
-        // The picker's listing owns a name per entry it found; without
-        // this the harness would leak them (and so would the app).
+        // The picker's listing owns a name per entry it found; without this the harness would leak them (and so would the app).
         self.app.picker.deinit(gpa);
         gpa.destroy(self.app);
         self.threaded.deinit();
     }
 
-    /// The app's own draw callback, so the Driver renders the REAL UI
-    /// rather than a stand-in.
-    /// Register the key adapter on the harness's own host.
-    ///
-    /// Must be the SAME adapter `main` installs — a `true` return means
-    /// close intent to the Wayland backend, so wiring it differently in
-    /// a test than in the app would test the wrong contract.
+    /// The app's own draw callback, so the Driver renders the REAL UI rather than a stand-in.
     fn installKeys(self: *Harness) void {
         self.driver.host.keys.register(struct {
             fn f(ctx: ?*anyopaque, mods: glin_input.Mods, keycode: u32) bool {
@@ -85,10 +68,6 @@ const Harness = struct {
     }
 
     /// Draw a frame and let the renderer settle.
-    ///
-    /// `waitForIdle` matters: glinlandui's scrollbar and hit-testing read
-    /// previous-frame data, so a single frame after a state change is
-    /// not enough for the text to be findable.
     fn frame(self: *Harness) void {
         self.driver.waitForIdle() catch {
             self.driver.frame();
@@ -112,17 +91,8 @@ const Harness = struct {
     }
 
     /// Press a key through the real host keychain.
-    ///
-    /// The distinction matters: `typeText` calls `App.onKey` directly, so
-    /// it never exercises glinlandui's `Mods` latch or handler chain.
-    /// The Wayland backend goes through those, and a break there would
-    /// make the app deaf while every direct-call test stayed green.
     fn press(self: *Harness, keycode: u32, mods: glin_input.Mods) void {
-        // Mods are a LATCH, not an argument: glinlandui's `Mods.track`
-        // consumes the Shift/Ctrl key events themselves and the handler
-        // then reads the latched state. Sending only the bare key would
-        // type "o" instead of "Ctrl+O", which is a test that passes
-        // nothing.
+        // Mods are a LATCH, not an argument: glinlandui's `Mods.track` consumes the Shift/Ctrl key events themselves and the handler then reads the latched.
         if (mods.ctrl) _ = h_key(self, editor.KEY_LEFTCTRL);
         if (mods.shift) _ = h_key(self, editor.KEY_LEFTSHIFT);
         _ = h_key(self, keycode);
@@ -139,14 +109,6 @@ const Harness = struct {
     }
 
     /// Assert the editor's line `line` reached the frame, byte for byte.
-    ///
-    /// The drawn line is the editor's text with a caret character spliced
-    /// in, so it is deliberately NOT the buffer verbatim — and comparing
-    /// against the raw buffer is exactly what let the blank-editor bug
-    /// through. Computing the expected line with the same renderer is
-    /// sound: that renderer has its own unit tests, and what is asserted
-    /// here is the thing that actually broke, which is whether the
-    /// editor's bytes survive to the frame at all.
     fn expectEditorDrawn(self: *Harness, line: usize) !void {
         var buf: [4096]u8 = undefined;
         const ed = &self.app.ed;
@@ -163,11 +125,6 @@ const Harness = struct {
     }
 
     /// Assert some drawn text CONTAINS `needle`.
-    ///
-    /// `Driver.expectText` is an exact whole-string match. That is the
-    /// right default and the wrong tool for "this message is on screen
-    /// and it names the failing path", because the message is a whole
-    /// sentence and its exact wording includes an error name.
     fn expectTextContaining(self: *Harness, needle: []const u8) !void {
         const count = self.driver.snapshot().text_count;
         for (0..count) |i| {
@@ -190,11 +147,6 @@ const Harness = struct {
     }
 
     /// Script what the system file dialog will answer with.
-    ///
-    /// The `Fake` lives on the caller's stack and the caller's
-    /// `defer ui.file_dialog.fake.uninstall()` runs before that frame goes
-    /// away, which is the only safe shape — the toolkit's fake holds a pointer
-    /// to it.
     fn scriptDialog(self: *Harness, fake: *ui.file_dialog.fake.Fake, answer: ui.file_dialog.fake.Answer) void {
         _ = self;
         fake.* = .{ .answer = answer };
@@ -245,8 +197,6 @@ test "the output actually appears in the rendered frame" {
     h.frame();
 
     // The values the query returned must be reachable as drawn text.
-    // This is the assertion that catches a grid which computes the right
-    // result and then renders blanks.
     try h.driver.expectText("alice");
     try h.driver.expectText("bob");
     try h.driver.expectText("carol");
@@ -268,8 +218,7 @@ test "SELECT * shows every column, header included" {
     for ([_][]const u8{ "id", "name", "email", "score" }) |header| {
         try h.driver.expectText(header);
     }
-    // `SELECT *` is expanded against the schema, so its columns are
-    // named — not `*`.
+    // `SELECT *` is expanded against the schema, so its columns are named — not `*`.
     try h.driver.expectNoText("*");
 }
 
@@ -279,8 +228,7 @@ test "numbers render, not blank cells" {
     defer h.deinit();
     try seed(h.app);
 
-    // INTEGER and REAL own no text, so a UI that reads the wrong
-    // accessor draws every one of these as an empty cell.
+    // INTEGER and REAL own no text, so a UI that reads the wrong accessor draws every one of these as an empty cell.
     try h.typeText("SELECT id, score FROM users");
     h.run();
     h.frame();
@@ -396,9 +344,7 @@ test "clicking a table in the sidebar loads it and fills the editor" {
 }
 
 test "Browse is in the frame, so the system dialog is reachable" {
-    // The button has to be ON SCREEN, not merely defined. A Browse action
-    // that no frame draws is the same failure as a database browser with no
-    // way to change database, which is what this replaced.
+    // The button has to be ON SCREEN, not merely defined.
     var h = try Harness.init(std.heap.page_allocator);
     defer h.deinit();
     h.frame();
@@ -415,22 +361,13 @@ test "the picker offers Browse too, so the listing can hand over" {
     h.frame();
 
     try testing.expect(h.driver.exists("picker.browse"));
-    // ...and the two old controls are still there. This one is a regression
-    // guard on the buttons it was added next to.
+    // ...and the two old controls are still there.
     try testing.expect(h.driver.exists("picker.open"));
     try testing.expect(h.driver.exists("picker.cancel"));
 }
 
 test "browsing with no system dialog says why, and changes nothing" {
-    // A GUI test build selects glinlandui's PORTABLE backend, where
-    // file_dialog is `error.Unsupported`. So this is not a stand-in for the
-    // real dialog: it is exactly what a browser gets, and it is the only
-    // one of the dialog's outcomes a headless runner can reach.
-    //
-    // What matters is not that it fails. It is that it fails LOUDLY and
-    // leaves a working application behind: a Browse button that silently does
-    // nothing is indistinguishable from a database browser that cannot open
-    // anything.
+    // A GUI test build selects glinlandui's PORTABLE backend, where file_dialog is `error.Unsupported`.
     var h = try Harness.init(std.heap.page_allocator);
     defer h.deinit();
     const before = h.app.db_path;
@@ -438,16 +375,13 @@ test "browsing with no system dialog says why, and changes nothing" {
     h.app.browseForDatabase();
 
     try testing.expect(std.mem.indexOf(u8, h.app.status, "picker") != null);
-    // The database is untouched, and still open: an unavailable dialog is
-    // not a reason to close what the user already had.
+    // The database is untouched, and still open: an unavailable dialog is not a reason to close what the user already had.
     try testing.expect(h.app.db_open);
     try testing.expectEqualStrings(before, h.app.db_path);
 }
 
 test "the message names the platform, not just the failure" {
-    // "file dialog failed" leaves the user with nothing to do. The message
-    // has to say WHICH thing is missing, because the fix is different for
-    // each: another platform, a package to install, or a session bus.
+    // "file dialog failed" leaves the user with nothing to do.
     var h = try Harness.init(std.heap.page_allocator);
     defer h.deinit();
 
@@ -459,9 +393,7 @@ test "the message names the platform, not just the failure" {
 }
 
 test "the picker still opens after a failed browse" {
-    // The fallback has to be reachable, not merely mentioned. A user who
-    // clicked Browse and been told to use the picker should find the picker
-    // one keypress away.
+    // The fallback has to be reachable, not merely mentioned.
     var h = try Harness.init(std.heap.page_allocator);
     defer h.deinit();
 
@@ -507,15 +439,7 @@ test "the rendered status reports the row and column counts" {
 }
 
 test "the editor buffer survives stack churn between keystrokes" {
-    // Regression test. `App.init` used to RETURN an App by value, so
-    // `ed.buf` pointed into the local it was copied from -- dead memory
-    // the moment the function returned. Typing then wrote into freed
-    // stack.
-    //
-    // The earlier E2E tests missed it because nothing between init and
-    // the first keystroke disturbed that stack, so the bytes happened to
-    // still be intact. The way to catch this class of bug is to clobber
-    // the stack deliberately between keystrokes, which is what this does.
+    // Regression test.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -535,9 +459,7 @@ test "the editor buffer survives stack churn between keystrokes" {
 }
 
 test "the editor buffer is not a pointer into a dead App copy" {
-    // A direct check of the invariant rather than its consequence: the
-    // buffer the editor writes to must be the one inside the App the
-    // caller holds.
+    // A direct check of the invariant rather than its consequence: the buffer the editor writes to must be the one inside the App the caller holds.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -550,15 +472,6 @@ test "the editor buffer is not a pointer into a dead App copy" {
 
 test "typing does not close the window" {
     // Regression test for the force-close.
-    //
-    // The Wayland backend treats a `true` return from `on_key` as CLOSE
-    // INTENT:
-    //
-    //     if (d.on_key(d.ptr, keymap.toEvdev(key), state == 1)) win.quit = true;
-    //
-    // The app's own handler returns true to mean "I handled this key",
-    // and the two were wired together directly — so the first character
-    // typed asked the window to shut down.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -569,8 +482,7 @@ test "typing does not close the window" {
     for (query_text) |ch| {
         const stroke = editor.keyCodeFor(ch) orelse return error.UnsupportedCharacter;
         if (stroke.shift) _ = h.driver.host.onKeyEvent(editor.KEY_LEFTSHIFT, true);
-        // The backend acts on this return value. It must stay false for
-        // every character the editor consumes.
+        // The backend acts on this return value.
         const close_intent = h.driver.host.onKeyEvent(stroke.code, true);
         try testing.expect(!close_intent);
         if (stroke.shift) _ = h.driver.host.onKeyEvent(editor.KEY_LEFTSHIFT, false);
@@ -588,9 +500,7 @@ test "typing does not close the window" {
 }
 
 test "Escape is the thing that closes the window" {
-    // The other half of the contract: after the fix, Escape must still
-    // ask the window to close, or the app cannot be quit from the
-    // keyboard at all.
+    // The other half of the contract: after the fix, Escape must still ask the window to close, or the app cannot be quit from the keyboard at all.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -605,30 +515,10 @@ test "Escape is the thing that closes the window" {
     try testing.expect(!h.driver.host.onKeyEvent(1, false));
 }
 
-// ---------------------------------------------------------------------------
-// The editor must be VISIBLE
-// ---------------------------------------------------------------------------
-//
-// Every test above types a query and then asserts on `App.result` or on
-// the grid — and the grid happens to be drawn from the frame arena, so
-// all of them passed while the SQL the user typed was rendered from a
-// dead stack buffer. The editor lines were the one place still using a
-// local, and nothing asserted on them.
+// The editor must be VISIBLE Every test above types a query and then asserts on `App.result` or on the grid — and the grid happens to be drawn from the.
 
 test "the typed SQL is actually drawn, not just held" {
     // The regression test for "typing does nothing".
-    //
-    // `editorLine` used to render into `var buf: [1024]u8` on the stack
-    // and hand that pointer to `text.label`. Clay keeps the pointer
-    // until the rasteriser runs, which is after the function returned,
-    // so the editor drew freed stack and the user saw nothing — while
-    // the buffer, the query engine and the results were all correct.
-    //
-    // The earlier suite missed it for two reasons: it only ever checked
-    // `App.result` and grid cells (which already used the arena), and the
-    // one place it did check a rendered string — the "clicking a table"
-    // test asserting `expectText("users")` — passed on the SIDEBAR copy
-    // of the name, not the editor's.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -637,15 +527,12 @@ test "the typed SQL is actually drawn, not just held" {
     try h.typeText("SELECT name FROM users");
     h.frame();
 
-    // A query that appears NOWHERE else in the UI, so the only way to
-    // find it is as the editor's own drawn line.
+    // A query that appears NOWHERE else in the UI, so the only way to find it is as the editor's own drawn line.
     try h.expectEditorDrawn(0);
 }
 
 test "a query the user typed is drawn after Ctrl+Enter too" {
-    // The editor keeps the query after it runs, so the buffer is still
-    // on screen. A blank editor next to a populated grid is the exact
-    // shape of the original bug.
+    // The editor keeps the query after it runs, so the buffer is still on screen.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -660,9 +547,7 @@ test "a query the user typed is drawn after Ctrl+Enter too" {
 }
 
 test "clicking a table draws its generated query, not just its name" {
-    // The blind spot in the old suite, closed: "users" is in the sidebar
-    // too, so asserting on it proved nothing about the editor. The
-    // generated `SELECT * FROM users` exists only in the editor.
+    // The blind spot in the old suite, closed: "users" is in the sidebar too, so asserting on it proved nothing about the editor.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -676,8 +561,7 @@ test "clicking a table draws its generated query, not just its name" {
 }
 
 test "a multi-line query draws every line" {
-    // Each line is its own label, so a per-line failure would be hidden
-    // by the others.
+    // Each line is its own label, so a per-line failure would be hidden by the others.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -693,10 +577,7 @@ test "a multi-line query draws every line" {
 }
 
 test "typing reaches the editor through the real keychain" {
-    // The direct-call tests prove `App.onKey` works. This proves the
-    // whole path does — glinlandui's Mods latch, the handler chain and
-    // the close-intent return value — because that is the path the
-    // Wayland backend actually takes.
+    // The direct-call tests prove `App.onKey` works.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -710,9 +591,7 @@ test "typing reaches the editor through the real keychain" {
     try h.expectEditorDrawn(0);
 }
 
-// ---------------------------------------------------------------------------
 // Choosing a database
-// ---------------------------------------------------------------------------
 
 /// A directory under the build cache with real database files in it.
 const DbDir = struct {
@@ -751,9 +630,7 @@ const DbDir = struct {
         const full = try self.join(name);
         defer self.gpa.free(full);
 
-        // Build it through SQLite rather than shipping a fixture, so the
-        // file is genuinely a database and the test is not asserting
-        // against a stale blob.
+        // Build it through SQLite rather than shipping a fixture, so the file is genuinely a database and the test is not asserting against a stale blob.
         var db = database.Db{};
         try db.init(self.io, try self.gpa.dupeZ(u8, full));
         defer db.deinit();
@@ -781,8 +658,7 @@ test "the picker appears in the frame, with a field and a button" {
     var h = try Harness.init(gpa);
     defer h.deinit();
 
-    // Closed by default: the panel is not something the window shows
-    // before it is asked for.
+    // Closed by default: the panel is not something the window shows before it is asked for.
     h.frame();
     try testing.expect(!h.driver.exists("picker"));
 
@@ -797,9 +673,7 @@ test "the picker appears in the frame, with a field and a button" {
 }
 
 test "typing a path and pressing Enter opens that database" {
-    // The whole point: a database browser that cannot be pointed at a
-    // different database. Everything routes through the UI here — the
-    // keychain, the focus switch, the field, Enter.
+    // The whole point: a database browser that cannot be pointed at a different database.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -873,8 +747,7 @@ test "clicking the Open button opens the typed path" {
     h.app.picker.field.setText(path);
     h.frame();
 
-    // The button is a real click target, so click it the way a pointer
-    // would rather than calling the handler.
+    // The button is a real click target, so click it the way a pointer would rather than calling the handler.
     try h.driver.click("picker.open");
 
     try testing.expect(h.app.db_open);
@@ -896,8 +769,7 @@ test "the sidebar's Open button toggles the picker" {
 }
 
 test "a directory is entered, not reported as a broken database" {
-    // Entering a directory must navigate rather than fail: "cannot open
-    // a directory" would be both true and useless.
+    // Entering a directory must navigate rather than fail: "cannot open a directory" would be both true and useless.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -936,8 +808,7 @@ test ".. goes back up a level" {
     h.app.activateCandidate(0); // ".."
 
     try testing.expectEqualStrings(".zig-cache/tmp", h.app.picker.dir());
-    // ...and the database is now one level further away, which is the
-    // point: there is always a way out of a listing.
+    // ...and the database is now one level further away, which is the point: there is always a way out of a listing.
     try testing.expectEqualStrings(".zig-cache/tmp", picker_mod.parentOf(dir.path));
 }
 
@@ -951,8 +822,7 @@ test "opening a database that is not there says which path failed" {
     h.app.openTypedPath();
 
     try testing.expect(!h.app.db_open);
-    // The old message was a bare "cannot open database", which names
-    // nothing the user can act on.
+    // The old message was a bare "cannot open database", which names nothing the user can act on.
     try testing.expect(std.mem.indexOf(u8, h.app.status, "missing.db") != null);
 
     h.frame();
@@ -960,8 +830,7 @@ test "opening a database that is not there says which path failed" {
 }
 
 test "a failed switch keeps the database that was already open" {
-    // Failing must not look like closing: the window still shows the old
-    // database and says so.
+    // Failing must not look like closing: the window still shows the old database and says so.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -971,15 +840,13 @@ test "a failed switch keeps the database that was already open" {
 
     h.app.open("/no/such/place/other.db");
     try testing.expect(!h.app.db_open);
-    // Never opened, so there is no path to keep — but the in-memory
-    // database the app started on must still be usable.
+    // Never opened, so there is no path to keep — but the in-memory database the app started on must still be usable.
     h.app.runEditor();
     try testing.expect(h.app.has_result or h.app.ed.len == 0);
 }
 
 test "Tab moves between the path field and the SQL editor" {
-    // Two fields, one keyboard: without an explicit focus the user can
-    // type a database path into their query, or a query into a path.
+    // Two fields, one keyboard: without an explicit focus the user can type a database path into their query, or a query into a path.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -1006,8 +873,7 @@ test "Tab moves between the path field and the SQL editor" {
 }
 
 test "typing is still SQL after the picker has been closed" {
-    // Closing must hand the keyboard back, or the window is left with a
-    // path field that swallows every query.
+    // Closing must hand the keyboard back, or the window is left with a path field that swallows every query.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -1027,9 +893,7 @@ test "typing is still SQL after the picker has been closed" {
 }
 
 test "the status line never points at freed memory" {
-    // `status` used to be `dupe`d onto the heap with nothing freeing it,
-    // or borrowed straight out of the result set — which is deinited on
-    // the next run. It is now always a slice of the App's own buffer.
+    // `status` used to be `dupe`d onto the heap with nothing freeing it, or borrowed straight out of the result set — which is deinited on the next run.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -1040,8 +904,7 @@ test "the status line never points at freed memory" {
     const after_error = h.app.status;
     try testing.expect(after_error.len > 0);
 
-    // Switch to another database, which frees the result the message
-    // used to live in.
+    // Switch to another database, which frees the result the message used to live in.
     h.app.open(":memory:");
     try h.typeText("SELECT 1");
     h.run();
@@ -1054,19 +917,7 @@ test "the status line never points at freed memory" {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Browse: the system dialog, end to end.
-//
-// These are the tests that were impossible before the toolkit grew a
-// scriptable dialog. A GUI test build took the portable stub, so
-// `App.browseForDatabase` could only ever report "no system file dialog on
-// this platform" — the selection path, the cancellation path and each portal
-// error were written, shipped, and never once executed by a test.
-//
-// Each one scripts an answer, clicks the real Browse button through the real
-// host, and then asserts on what the app DID: which database is open, what
-// the status line says, and what the frame draws.
-// ---------------------------------------------------------------------------
 
 test "Browse opens the database the dialog returns" {
     // The whole point of the feature: click Browse, pick a file, browse it.
@@ -1084,8 +935,7 @@ test "Browse opens the database the dialog returns" {
     defer ui.file_dialog.fake.uninstall();
     h.scriptDialog(&fake, .{ .selected = &.{path} });
 
-    // Through the real button, not the handler: a Browse action no frame
-    // draws is the same failure as a browser with no way to change database.
+    // Through the real button, not the handler: a Browse action no frame draws is the same failure as a browser with no way to change database.
     h.frame();
     try h.driver.click("sidebar.browse");
 
@@ -1099,9 +949,7 @@ test "Browse opens the database the dialog returns" {
 }
 
 test "a browsed database can be queried, and the result is drawn" {
-    // Browse is only useful if what it opens can then be queried. This is the
-    // full path the task asks for: Browse -> database opens -> query runs ->
-    // result appears in the frame.
+    // Browse is only useful if what it opens can then be queried.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -1127,15 +975,13 @@ test "a browsed database can be queried, and the result is drawn" {
 
     try testing.expect(h.app.has_result);
     try testing.expectEqual(@as(usize, 1), h.app.result.rowCount());
-    // The row the fixture inserted, reachable as DRAWN text — not merely
-    // present in the result set.
+    // The row the fixture inserted, reachable as DRAWN text — not merely present in the result set.
     try h.driver.expectText("zoe");
     try h.driver.expectText("name");
 }
 
 test "clicking a table in a browsed database fills the editor and the grid" {
-    // The other half of browsing: the schema tree is populated from what the
-    // dialog opened, and clicking a row in it runs a query.
+    // The other half of browsing: the schema tree is populated from what the dialog opened, and clicking a row in it runs a query.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -1163,9 +1009,7 @@ test "clicking a table in a browsed database fills the editor and the grid" {
 }
 
 test "the dialog is asked to start in the open database's directory" {
-    // The request half of the contract, asserted through the app. A dialog
-    // that opened in the wrong directory would pass every assertion on the
-    // answer alone.
+    // The request half of the contract, asserted through the app.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -1191,8 +1035,7 @@ test "the dialog is asked to start in the open database's directory" {
 }
 
 test "a cancelled browse leaves the open database alone" {
-    // The user closed the dialog on purpose. That must not look like a close:
-    // the database that was open is still open, and the status says so.
+    // The user closed the dialog on purpose.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -1213,9 +1056,7 @@ test "a cancelled browse leaves the open database alone" {
 }
 
 test "each portal failure is reported, and the picker is still offered" {
-    // "no portal" and "no bus" have completely different fixes, so the app
-    // must say which one it got — and every one of them must leave the
-    // fallback reachable.
+    // "no portal" and "no bus" have completely different fixes, so the app must say which one it got — and every one of them must leave the fallback.
     const gpa = std.heap.page_allocator;
     const E = ui.file_dialog.Error;
     const cases = [_]struct { err: E, want: []const u8 }{
@@ -1245,9 +1086,7 @@ test "each portal failure is reported, and the picker is still offered" {
 }
 
 test "a browse that returns nothing is not treated as a picked file" {
-    // A backend that was asked for a file and got none reports `.other`. An
-    // app that read `first()` off an empty list would have to guess, and
-    // `App.browseForDatabase` guards against exactly that.
+    // A backend that was asked for a file and got none reports `.other`.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -1264,9 +1103,7 @@ test "a browse that returns nothing is not treated as a picked file" {
 }
 
 test "browsing twice opens the second database" {
-    // The fake is stateless between calls apart from its counter, so a second
-    // browse is a second real round trip. This is what makes switching
-    // databases through Browse work at all.
+    // The fake is stateless between calls apart from its counter, so a second browse is a second real round trip.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();
@@ -1294,9 +1131,7 @@ test "browsing twice opens the second database" {
 }
 
 test "the Browse button is a real click target in the frame" {
-    // A Browse action no frame draws is the same failure as a database
-    // browser with no way to change database. This is the assertion that
-    // would catch the button being defined and never declared.
+    // A Browse action no frame draws is the same failure as a database browser with no way to change database.
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
     defer h.deinit();

@@ -1,69 +1,22 @@
 //! Choosing a database from inside the window.
-//!
-//! ## Why this still exists, now that the toolkit has a file dialog
-//!
-//! This module was written when glinlandui had no file dialog on any
-//! backend, and that sentence was true: there was no xdg-desktop-portal,
-//! no AppKit `NSOpenPanel`, no Win32 `IFileDialog`, and none of its
-//! fifteen components opens a file — they are layout and input primitives
-//! (box, button, text, input, list, dropdown, scroll, toggle, checkbox,
-//! radio, slider, icon, image, click_registry, dispatch).
-//!
-//! The toolkit has one now (`dialog.zig` uses it, and `available()` is
-//! what decides whether the Browse button can do anything), so this is no
-//! longer the only way to open a database. It stays for two reasons, and
-//! neither of them is inertia:
-//!
-//!   1. **It works where the system dialog does not.** A browser has no
-//!      filesystem paths at all, and a Wayland session with no desktop
-//!      portal installed has no portal to ask. `error.Unsupported` and
-//!      `error.NoPortal` are both real answers from the toolkit, and this
-//!      is what the user is pointed at when it gives one.
-//!   2. **It is always reachable.** A test cannot click a native dialog —
-//!      it would block forever, or need a real display and a human. The
-//!      toolkit's scriptable dialog (`ui.file_dialog.fake`) closed that gap
-//!      for Browse, so both routes are now covered; this one remains the
-//!      path that needs no seam at all.
-//!
-//! So: Browse is the button people reach for, and this is the one that
-//! always works. They are not alternatives; the other half of the answer
-//! to "what if there is no portal" is a second button and a status line.
-//!
-//! ## Shape
-//!
-//! Like `editor.zig` this module is PURE — no glinlandui types and no
-//! drawing — so the whole of it tests with no display server and no
-//! windowing system. `main.zig` is the only file that knows how it
-//! looks.
 
 const std = @import("std");
 const Io = std.Io;
 
 const editor = @import("editor.zig");
 
-/// Longest path the picker holds, in bytes. Long enough for any real
-/// database path; short enough that the frame arena is barely touched.
+/// Longest path the picker holds, in bytes.
 pub const path_capacity: usize = 512;
 
-/// The listing shows this many entries. Past that the panel says how
-/// many are hidden rather than growing without bound — the same rule the
-/// schema tree uses, and for the same reason: every row is a declared
-/// box, and the click registry caps at 256 entries per frame.
+/// The listing shows this many entries.
 pub const max_entries: usize = 200;
 
 /// Extensions the picker offers as databases.
-///
-/// SQLite will open ANY file, and it will happily create one, so the
-/// filter is about the *picker* being useful rather than about what is
-/// legal: a listing of everything in a directory is a worse picker than
-/// a listing of the things that are plausibly databases. A path typed
-/// into the field bypasses this entirely.
 pub const database_extensions = [_][]const u8{
     ".db", ".db3", ".sqlite", ".sqlite3",
 };
 
-/// True when `name` ends in one of `database_extensions`, case
-/// insensitively, so `Users.DB` is offered alongside `users.db`.
+/// True when `name` ends in one of `database_extensions`, case insensitively, so `Users.DB` is offered alongside `users.db`.
 pub fn looksLikeDatabase(name: []const u8) bool {
     for (database_extensions) |ext| {
         if (name.len < ext.len) continue;
@@ -75,56 +28,34 @@ pub fn looksLikeDatabase(name: []const u8) bool {
 
 /// One row in the listing.
 pub const Candidate = struct {
-    /// Base name only. `fullPath` joins it onto the directory, so
-    /// moving the directory does not invalidate a row.
+    /// Base name only.
     name: []const u8,
     is_dir: bool,
 };
 
 /// The open-a-database panel's state.
-///
-/// This is the whole of "select a database": a path field, a directory
-/// being listed, and what that directory contains.
 pub const Picker = struct {
     /// Whether the panel is on screen at all.
     open: bool = false,
 
-    /// The directory being listed. Empty resolves to the process
-    /// directory at scan time, which is what a freshly opened panel
-    /// wants: the user launched the app somewhere.
+    /// The directory being listed.
     dir_buf: [path_capacity]u8 = undefined,
     dir_len: usize = 0,
 
     /// The typed path.
-    ///
-    /// An `editor.Editor` rather than a bare buffer, deliberately: the
-    /// same key handler, the same caret, the same selection semantics
-    /// then serve this field and the SQL editor, so there is one code
-    /// path to test and one to keep correct.
     field_buf: [path_capacity]u8 = undefined,
     field: editor.Editor = undefined,
 
-    /// What `dir_buf` holds: subdirectories first, then database files,
-    /// each group in name order so the listing does not reshuffle
-    /// between scans. Owns every `name`.
+    /// What `dir_buf` holds: subdirectories first, then database files, each group in name order so the listing does not reshuffle between scans.
     entries: std.ArrayList(Candidate) = .empty,
 
-    /// Keyboard cursor over `entries`. Always a valid index whenever
-    /// `entries` is non-empty, so Up/Down cannot land out of range.
+    /// Keyboard cursor over `entries`.
     cursor: usize = 0,
 
-    /// Set when the directory could not be read. The panel says why it
-    /// is empty instead of showing an empty list and no reason.
+    /// Set when the directory could not be read.
     error_message: ?[]const u8 = null,
 
     /// Initialise IN PLACE, and bind the field to its own storage.
-    ///
-    /// The in-place rule is the same one `App.init` exists to enforce:
-    /// the field holds a slice of `field_buf`, a field of this very
-    /// struct, so returning a Picker by value would leave that slice
-    /// pointing into the local it was copied FROM — dead memory the
-    /// moment the function returned, and a keystroke writing into freed
-    /// stack. Nothing in the type system flags that.
     pub fn init(self: *Picker) void {
         self.* = .{};
         self.field = editor.Editor.init(&self.field_buf);
@@ -138,14 +69,10 @@ pub const Picker = struct {
         return self.dir_buf[0..self.dir_len];
     }
 
-    /// Replace the listed directory. Truncates rather than failing: a
-    /// path too long to store is a path the user can retype, and
-    /// overflowing a fixed buffer in a UI thread is not.
+    /// Replace the listed directory.
     pub fn setDir(self: *Picker, path: []const u8) void {
         const n = @min(path.len, self.dir_buf.len);
-        // @memmove, not @memcpy: `App.goUp` legitimately passes a slice
-        // of this very buffer (`parentOf(self.picker.dir())`), and
-        // @memcpy panics on aliasing instead of copying.
+        // @memmove, not @memcpy: `App.goUp` legitimately passes a slice of this very buffer (`parentOf(self.picker.dir())`), and @memcpy panics on aliasing.
         @memmove(self.dir_buf[0..n], path[0..n]);
         self.dir_len = n;
     }
@@ -158,28 +85,18 @@ pub const Picker = struct {
     }
 
     /// Directories before files, then name order within each group.
-    ///
-    /// Directories first because they are what the user navigates
-    /// through, and a stable order because a listing that reshuffles
-    /// between scans makes the cursor land on a different row.
     fn lessThan(_: void, a: Candidate, b: Candidate) bool {
         if (a.is_dir != b.is_dir) return a.is_dir;
         return std.mem.order(u8, a.name, b.name) == .lt;
     }
 
     /// Read the listed directory into `entries`.
-    ///
-    /// Allocation failures stop the scan and keep what was read, rather
-    /// than unwinding out of a key handler: a short listing is a worse
-    /// picker, a crash is a dead window.
     pub fn scan(self: *Picker, gpa: std.mem.Allocator, io: Io) void {
         self.freeEntries(gpa);
         self.error_message = null;
 
         const path = self.dir();
-        // Not named `dir`: that is `Picker.dir()`, and shadowing it here
-        // is an error the compiler catches and a reader should not have
-        // to.
+        // Not named `dir`: that is `Picker.dir()`, and shadowing it here is an error the compiler catches and a reader should not have to.
         const handle = std.Io.Dir.cwd().openDir(
             io,
             if (path.len == 0) "." else path,
@@ -205,9 +122,6 @@ pub const Picker = struct {
         std.sort.pdq(Candidate, self.entries.items, {}, lessThan);
 
         // ".." goes in first and is never sorted among the real entries.
-        // Going up is the one navigation everyone needs, and burying it
-        // alphabetically between `apple/` and `backup/` would defeat the
-        // point. A picker with no way back out is a trap.
         if (canGoUp(path)) {
             const parent = gpa.dupe(u8, "..") catch {
                 self.cursor = 0;
@@ -220,28 +134,21 @@ pub const Picker = struct {
         self.cursor = 0;
     }
 
-    /// True when the listed directory has somewhere to go up to. The
-    /// process directory (path empty) counts, because ".." there is the
-    /// user's home.
+    /// True when the listed directory has somewhere to go up to.
     fn canGoUp(path: []const u8) bool {
         if (path.len == 0) return true;
         const parent = parentOf(path);
         return !std.mem.eql(u8, parent, path);
     }
 
-    /// The absolute-or-relative path a row refers to: the listed
-    /// directory joined to the row's name.
-    ///
-    /// Falls back to the bare name when there is no directory, so a
-    /// picker with nothing listed still opens what the user can see.
+    /// The absolute-or-relative path a row refers to: the listed directory joined to the row's name.
     pub fn fullPath(self: *const Picker, gpa: std.mem.Allocator, entry: Candidate) ![]u8 {
         const base = self.dir();
         if (base.len == 0) return gpa.dupe(u8, entry.name);
         return std.fmt.allocPrint(gpa, "{s}/{s}", .{ base, entry.name });
     }
 
-    /// Move the cursor, clamping at both ends so the listing cannot be
-    /// walked off either edge.
+    /// Move the cursor, clamping at both ends so the listing cannot be walked off either edge.
     pub fn moveCursor(self: *Picker, delta: isize) void {
         if (self.entries.items.len == 0) return;
         const last: isize = @intCast(self.entries.items.len - 1);
@@ -252,13 +159,7 @@ pub const Picker = struct {
         self.cursor = @intCast(next);
     }
 
-    /// True when `path` names a directory, so the caller knows to enter
-    /// it rather than try to open it as a database.
-    ///
-    /// Anything unstattable — missing, or no permission — reports
-    /// `false`, which means "try to open it". That is the right default:
-    /// the failure then comes from the open, and the message says which
-    /// path failed.
+    /// True when `path` names a directory, so the caller knows to enter it rather than try to open it as a database.
     pub fn isDirectory(io: Io, path: []const u8) bool {
         const parent = parentOf(path);
         const base = baseOf(path);
@@ -287,9 +188,7 @@ pub fn parentOf(path: []const u8) []const u8 {
     return trimmed[0..slash];
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 
@@ -307,9 +206,7 @@ test "the extension list is matched case-insensitively" {
 }
 
 test "the field is bound to the picker's own storage" {
-    // The regression the in-place `init` exists to prevent: a Picker
-    // returned by value would carry a field slice pointing into the
-    // local it was copied from.
+    // The regression the in-place `init` exists to prevent: a Picker returned by value would carry a field slice pointing into the local it was copied from.
     var p: Picker = undefined;
     p.init();
     p.field.setText("some.db");
@@ -384,8 +281,7 @@ test "path helpers split a path the way a shell would" {
     try testing.expectEqualStrings("/tmp", parentOf("/tmp/app.db"));
     try testing.expectEqualStrings("app.db", baseOf("app.db"));
     try testing.expectEqualStrings(".", parentOf("app.db"));
-    // A trailing slash is a separator, not part of a name: the last
-    // component of "/a/b/" is "b", and its parent is "/a".
+    // A trailing slash is a separator, not part of a name: the last component of "/a/b/" is "b", and its parent is "/a".
     try testing.expectEqualStrings("b", baseOf("/a/b/"));
     try testing.expectEqualStrings("/a", parentOf("/a/b/"));
     // A root path has no parent to go up to.
@@ -405,8 +301,7 @@ test "fullPath joins the directory onto the entry name" {
     defer gpa.free(joined);
     try testing.expectEqualStrings("/tmp/data/app.db", joined);
 
-    // With no directory set, the bare name is the best that can be
-    // offered — and must not come out as "/app.db".
+    // With no directory set, the bare name is the best that can be offered — and must not come out as "/app.db".
     p.setDir("");
     const bare = try p.fullPath(gpa, .{ .name = "app.db", .is_dir = false });
     defer gpa.free(bare);
@@ -432,14 +327,12 @@ test "isDirectory tells a directory from a file" {
 
     try testing.expect(Picker.isDirectory(io, sub_path));
     try testing.expect(!Picker.isDirectory(io, file_path));
-    // Unstattable means "not a directory", so the caller tries to open
-    // it and the failure names the path.
+    // Unstattable means "not a directory", so the caller tries to open it and the failure names the path.
     try testing.expect(!Picker.isDirectory(io, "/no/such/file/at/all.db"));
 }
 
 test "scanning a real directory finds its databases and its subdirectories" {
-    // The picker is only useful if it lists what is actually there, so
-    // this scans a directory the test itself populated.
+    // The picker is only useful if it lists what is actually there, so this scans a directory the test itself populated.
     const gpa = testing.allocator;
     var threaded: Io.Threaded = .init(gpa, .{});
     defer threaded.deinit();
@@ -461,9 +354,7 @@ test "scanning a real directory finds its databases and its subdirectories" {
     p.scan(gpa, io);
 
     try testing.expect(p.error_message == null);
-    // ".." first, then the directory, then the two databases. The .txt
-    // is filtered out: a listing of everything is a worse picker than a
-    // listing of things that are plausibly databases.
+    // ".." first, then the directory, then the two databases.
     try testing.expectEqual(@as(usize, 4), p.entries.items.len);
     try testing.expectEqualStrings("..", p.entries.items[0].name);
     try testing.expect(p.entries.items[0].is_dir);
@@ -518,9 +409,7 @@ test "an unreadable directory reports why instead of listing nothing" {
 }
 
 test "rescanning does not leak the previous listing" {
-    // `scan` frees the old entries first; without that, every Ctrl+O
-    // would strand a copy of every name it listed. testing.allocator
-    // fails the test if one survives.
+    // `scan` frees the old entries first; without that, every Ctrl+O would strand a copy of every name it listed.
     const gpa = testing.allocator;
     var threaded: Io.Threaded = .init(gpa, .{});
     defer threaded.deinit();
@@ -545,9 +434,7 @@ test "rescanning does not leak the previous listing" {
     try testing.expectEqual(@as(usize, 0), p.cursor);
 }
 
-// ---------------------------------------------------------------------------
 // Test helpers
-// ---------------------------------------------------------------------------
 
 const Seed = struct { name: []const u8, is_dir: bool };
 
@@ -566,10 +453,6 @@ fn addEntries(
 }
 
 /// A directory under the build cache that the test owns outright.
-///
-/// `std.testing.tmpDir` hides its `Io` inside the std module, and the
-/// picker needs the SAME `Io` the App uses. So the directory is made
-/// here, with the caller's `Io`, and removed on deinit.
 const ScratchDir = struct {
     gpa: std.mem.Allocator,
     io: Io,

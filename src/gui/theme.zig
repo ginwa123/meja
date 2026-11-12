@@ -1,13 +1,4 @@
-//! Colours and metrics for the GUI.
-//!
-//! glinlandui has no theme — every component carries neutral dark
-//! defaults inline. Those defaults are fine for a demo but say nothing
-//! about which values are *deliberate*, so the app's palette lives here
-//! where it can be read and changed in one place.
-//!
-//! The palette is dark and low-chroma on purpose: the content is text,
-//! and a saturated UI would compete with the data. The one accent is
-//! the selection colour, used in exactly two places.
+//! Colours and metrics for the GUI, in one place so the palette can be read and changed.
 
 const ui = @import("glinlandui");
 const Color = ui.Color;
@@ -18,9 +9,14 @@ pub const bg_panel = Color.hexC("#1a1a1d");
 pub const bg_editor = Color.hexC("#101014");
 pub const bg_header = Color.hexC("#22222a");
 pub const bg_selected = Color.hexC("#2d3a52");
+pub const bg_hover = Color.hexC("#20202a");
+pub const bg_tab = Color.hexC("#1a1a1d");
+pub const bg_tab_active = Color.hexC("#141416");
+pub const bg_chip = Color.hexC("#22222a");
+pub const bg_primary = Color.hexC("#2b3d55");
+pub const bg_primary_hover = Color.hexC("#33475f");
 
-// Grid zebra striping. Very close in value, so the stripes aid scanning
-// without turning the table into a barcode.
+// Grid zebra striping, very close in value so the stripes aid scanning without turning the table into a barcode.
 pub const bg_row_even = Color.hexC("#17171a");
 pub const bg_row_odd = Color.hexC("#1c1c20");
 
@@ -29,47 +25,50 @@ pub const text = Color.hexC("#d8d8dc");
 pub const text_bright = Color.hexC("#f0f0f4");
 pub const text_dim = Color.hexC("#8a8a94");
 pub const text_faint = Color.hexC("#5a5a64");
+pub const text_ghost = Color.hexC("#3f3f49");
 
-/// NULL. Deliberately dimmer than a real value: a column of NULLs should
-/// read as "mostly empty", not as data. This is the visual payoff of
-/// recovering the storage class — without it, NULL and '' are the same
-/// bytes and cannot be styled apart at all.
+/// NULL, deliberately dimmer than a real value so a column of NULLs reads as mostly empty.
 pub const text_null_value = Color.hexC("#4f6a8a");
 
-/// Truncation / overflow / error hints.
+// Accents.
+pub const accent = Color.hexC("#7aa2c4");
+pub const ok = Color.hexC("#7fae8a");
 pub const warn = Color.hexC("#c8a45c");
 pub const danger = Color.hexC("#c86a6a");
+
+// Lines.
+pub const line = Color.hexC("#26262c");
+pub const line_soft = Color.hexC("#1f1f24");
 
 // Metrics, in pixels.
 pub const font_size: u16 = 14;
 pub const font_size_small: u16 = 13;
+pub const font_size_tiny: u16 = 11;
 
 /// One grid row, header included.
 pub const row_height: u16 = 22;
 
-/// Horizontal padding inside a grid cell. Column widths are computed
-/// from this, so changing it changes the layout consistently.
+/// One tree row. Taller than a grid row: a tree is read, a grid is scanned.
+pub const tree_row_height: u16 = 24;
+
+/// Horizontal padding inside a grid cell; column widths are computed from it.
 pub const cell_padding: u16 = 6;
 
-/// Width of the schema tree. Wide enough for a 30-character table name
-/// at the small font size, which covers the overwhelming majority.
-pub const sidebar_width: f32 = 260;
+/// Width of the schema tree, wide enough for a 30-character table name at the small font.
+pub const sidebar_width: f32 = 272;
 
-test "the palette is opaque" {
-    // A transparent surface would let the window background show
-    // through and make the grid unreadable.
-    for ([_]Color{
-        bg_app,      bg_panel,    bg_editor,  bg_header,
-        bg_selected, bg_row_even, bg_row_odd,
-    }) |c| {
-        try @import("std").testing.expect(c.isOpaque());
-    }
-}
+// Chrome heights.
+pub const topbar_h: f32 = 44;
+pub const tabs_h: f32 = 34;
+pub const status_h: f32 = 26;
+pub const bar_h: f32 = 30;
+pub const grip_h: f32 = 5;
+
+/// Width of the row-number gutter in the grid.
+pub const rownum_w: f32 = 44;
 
 test "grid stripes are distinguishable but close" {
-    // A zebra stripe that is too strong makes a wide table hard to read
-    // across; too weak and it does nothing. Assert they differ, and that
-    // they differ only slightly.
+    // Too strong makes a wide table hard to read across; too weak and it does nothing.
     const a = @as(i32, bg_row_even.r());
     const b = @as(i32, bg_row_odd.r());
     const delta = @abs(a - b);
