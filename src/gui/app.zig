@@ -11,7 +11,7 @@ const sql = @import("meja").sql;
 const value_mod = @import("meja").value;
 const glin = @import("glinlandui");
 const input_mod = glin.components.input;
-const text_input = glin.text_input;
+const text_editor = glin.text_editor;
 
 const editor = glin.text_editor;
 const grid = glin.table;
@@ -98,12 +98,12 @@ pub const App = struct {
 
     // Tree search.
     tree_search_buf: [64]u8 = undefined,
-    tree_search_ed: text_input.TextInput = undefined,
+    tree_search_ed: text_editor.Editor = undefined,
     tree_search: []const u8 = "",
 
     // Row filter, pagination and sort.
     filter_buf: [128]u8 = undefined,
-    filter_ed: text_input.TextInput = undefined,
+    filter_ed: text_editor.Editor = undefined,
     filter: []const u8 = "",
     page: usize = 0,
     /// How many rows the query asks for. Grows as the grid is scrolled, which is what makes the grid lazy instead of paged.
@@ -129,7 +129,7 @@ pub const App = struct {
     // Command palette.
     palette_open: bool = false,
     palette_buf: [64]u8 = undefined,
-    palette_ed: text_input.TextInput = undefined,
+    palette_ed: text_editor.Editor = undefined,
     palette: []const u8 = "",
     palette_idx: usize = 0,
 
@@ -159,9 +159,9 @@ pub const App = struct {
         self.* = .{ .gpa = gpa, .io = io };
         // Bound to `sql_buf` AFTER the struct is in its final place, so the pointer refers to the App the caller actually holds.
         self.ed = editor.Editor.init(&self.sql_buf);
-        self.tree_search_ed = text_input.TextInput.init(&self.tree_search_buf);
-        self.filter_ed = text_input.TextInput.init(&self.filter_buf);
-        self.palette_ed = text_input.TextInput.init(&self.palette_buf);
+        self.tree_search_ed = text_editor.Editor.init(&self.tree_search_buf);
+        self.filter_ed = text_editor.Editor.init(&self.filter_buf);
+        self.palette_ed = text_editor.Editor.init(&self.palette_buf);
         // The live fields need a stable context each, so the click callback can find its model.
         self.tree_search_ctx = .{ .input = &self.tree_search_ed, .id = "sidebar.search", .char_w = 7.8, .on_focus = focusTreeSearch, .focus_ctx = self };
         self.filter_ctx = .{ .input = &self.filter_ed, .id = "results.filter", .char_w = 6.6, .on_focus = focusFilter, .focus_ctx = self };
@@ -1001,8 +1001,8 @@ pub const App = struct {
     const Field = enum { tree, filter, palette };
 
     /// Keys for one of the small text fields. The editor's own handler does the work, so typing, Backspace, Home/End and shift-selection behave exactly as they do in the SQL editor.
-    fn onFieldKey(self: *App, ed: *text_input.TextInput, keycode: u32, mods: input_mod.Mods, which: Field) bool {
-        switch (ed.handleKey(keycode, mods.shift, mods.ctrl)) {
+    fn onFieldKey(self: *App, ed: *text_editor.Editor, keycode: u32, mods: input_mod.Mods, which: Field) bool {
+        switch (text_editor.handleKey(ed, keycode, mods.shift, mods.ctrl)) {
             .edited => {
                 ed.idle = 0;
                 switch (which) {
@@ -1015,7 +1015,7 @@ pub const App = struct {
                 }
                 return true;
             },
-            .submitted => {
+            .run_requested => {
                 self.runEditor();
                 return true;
             },

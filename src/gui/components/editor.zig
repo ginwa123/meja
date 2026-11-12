@@ -101,6 +101,27 @@ pub fn editorLine(self: *App, line: usize, has_caret: bool) void {
     else
         null;
 
+    // A selection is drawn as a highlighted run, the same way the small fields draw one.
+    if (self.ed.caret.selection()) |span| {
+        const a = @max(span.start, start);
+        const b = @min(span.end, end);
+        if (a < b) {
+            const s0 = a - start;
+            const s1 = b - start;
+            if (s0 > 0) text_mod.label(.{ .str = text[0..s0], .font_size = theme.font_size, .color = theme.text });
+            box_mod.box(.{
+                .id = self.cellId("editor.sel", line),
+                .w = .fit,
+                .h = .grow,
+                .direction = .row,
+                .bg = theme.bg_selected,
+            }, self, noChildren);
+            text_mod.label(.{ .str = text[s0..s1], .font_size = theme.font_size, .color = theme.text_bright });
+            if (s1 < text.len) text_mod.label(.{ .str = text[s1..], .font_size = theme.font_size, .color = theme.text });
+            return;
+        }
+    }
+
     // NOT a local buffer: the draw command keeps this pointer until the rasteriser runs.
     const cap = @min(text.len + 1, max_line_bytes);
     const buf = self.claimText(cap);
@@ -112,6 +133,8 @@ pub fn editorLine(self: *App, line: usize, has_caret: bool) void {
         .color = theme.text,
     });
 }
+
+fn noChildren(_: *App) void {}
 
 // ---- results --------------------------------------------------------------
 
