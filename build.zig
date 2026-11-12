@@ -1,37 +1,4 @@
 //! meja — a cross-platform database management app.
-//!
-//! Layout of this build:
-//!
-//!   meja (module)      src/root.zig   — the reusable core library.
-//!                                     Everything platform-agnostic lives
-//!                                     here: SQL text utilities, the typed
-//!                                     value layer, schema introspection and
-//!                                     the query engine.
-//!
-//!   meja-cli (exe)     src/cli/       — terminal frontend. Needs no
-//!                                     display server, so it builds and
-//!                                     tests on Linux, macOS and Windows
-//!                                     without a GUI session.
-//!
-//!   meja-gui (exe)     src/gui/       — glinlandui frontend. Optional:
-//!                                     `-Dgui=false` drops it so the CLI
-//!                                     still builds on a box with no
-//!                                     Wayland toolchain installed.
-//!
-//! Both frontends depend on `meja` — neither contains data-access logic of
-//! its own, which is what keeps them in sync.
-//!
-//! ## Dependency wiring
-//!
-//! `databases` (ruangsql) is resolved through `b.dependency(...)` and
-//! exposes a single module named `databases`. It carries the sqlite3 /
-//! libpq / openssl link line for whatever target we hand it, so this
-//! build.zig never has to name a system library directly.
-//!
-//! `-Ddb_used` is forwarded verbatim: `"sqlite"` (default) links nothing
-//! but sqlite3; `"sqlite,postgres"` additionally compiles the libpq
-//! backend. Keeping sqlite as the default is what makes the CI matrix
-//! cheap — a Linux runner has no libpq by default.
 
 const std = @import("std");
 
@@ -39,16 +6,14 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Frontend toggles. Both default to on; turning either off produces a
-    // leaner build (and a leaner CI job) without touching source.
+    // Frontend toggles.
     const build_gui = b.option(
         bool,
         "gui",
         "Build the glinlandui GUI executable (default: true)",
     ) orelse true;
 
-    // Comma-separated backend list forwarded to ruangsql. See
-    // src/root.zig for how the app branches on this at comptime.
+    // Comma-separated backend list forwarded to ruangsql.
     const db_used = b.option(
         []const u8,
         "db_used",
@@ -133,16 +98,7 @@ pub fn build(b: *std.Build) void {
         run_gui_step.dependOn(&run_gui.step);
     }
 
-    // --- a dump tool: renders a real frame and prints what it drew ---
-    // Not installed; run it with `zig build inspect -- <db>`. It is how
-    // the GUI was verified without a human at the screen.
-    //
-    // GUI-only, like the executable above it: it drives the REAL draw
-    // functions, so there is nothing to build without glinlandui. The
-    // old version reached for `glinlandui_dep.?` unconditionally, which
-    // made `zig build test -Dgui=false` — the documented way to build on
-    // a box with no Wayland toolchain — abort in build.zig itself,
-    // before compiling anything.
+    // --- a dump tool: renders a real frame and prints what it drew --- Not installed; run it with `zig build inspect -- <db>`.
     if (glinlandui_dep) |gdep| {
         const inspect = b.addExecutable(.{
             .name = "meja-inspect",
@@ -163,16 +119,11 @@ pub fn build(b: *std.Build) void {
         inspect_step.dependOn(&run_inspect.step);
     }
 
-    // --- tests ---
-    // The core is tested directly against the `meja` module. It has no
-    // dependency on any frontend, so these tests pass on every platform
-    // with no display server.
+    // --- tests --- The core is tested directly against the `meja` module.
     const core_tests = b.addTest(.{ .root_module = meja_mod });
     const run_core_tests = b.addRunArtifact(core_tests);
 
-    // The CLI frontend gets its own test binary: `zig build test` exercises
-    // argument parsing, formatting and the interactive REPL against a real
-    // in-memory database.
+    // The CLI frontend gets its own test binary: `zig build test` exercises argument parsing, formatting and the interactive REPL against a real in-memory.
     const cli_tests = b.addTest(.{ .root_module = cli_mod });
     const run_cli_tests = b.addRunArtifact(cli_tests);
 
@@ -180,9 +131,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_cli_tests.step);
 
-    // GUI tests are opt-in and separate: they need the glinlandui
-    // dependency to configure, and a GUI-less CI runner can skip them
-    // with `-Dgui=false` (in which case this step is not registered).
+    // GUI tests are opt-in and separate: they need the glinlandui dependency to configure, and a GUI-less CI runner can skip them with `-Dgui=false` (in.
     if (gui_mod) |gm| {
         const gui_tests = b.addTest(.{ .root_module = gm });
         const run_gui_tests = b.addRunArtifact(gui_tests);
@@ -190,4 +139,35 @@ pub fn build(b: *std.Build) void {
         gui_test_step.dependOn(&run_gui_tests.step);
         test_step.dependOn(&run_gui_tests.step);
     }
+
+    // --- lint: zginlint (github.com/ginwa123/zglint) --- Pinned in build.zig.zon.
+    const zginlint_dep = b.dependency("zginlint", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zginlint_exe = zginlint_dep.artifact("zginlint");
+    const install_zginlint = b.addInstallArtifact(zginlint_exe, .{});
+    b.step("zginlint", "Build the zginlint CLI into zig-out/bin/zginlint")
+        .dependOn(&install_zginlint.step);
+
+    // The scope the gate covers.
+    const zginlint_scope = [_][]const u8{ "src", "build.zig" };
+
+    // `has_side_effects` is load-bearing: a Run step is keyed by its binary and argv, NOT by the tree it reads, so without it a rerun skips the scan.
+    const zginlint_check = b.step("zginlint:check", "Enforce the zginlint rules on the tree (zero findings)");
+    const run_zginlint_check = b.addRunArtifact(zginlint_exe);
+    run_zginlint_check.setCwd(b.path("."));
+    run_zginlint_check.addArgs(&.{ "--max-comment-lines", "1" });
+    run_zginlint_check.addArgs(&zginlint_scope);
+    run_zginlint_check.has_side_effects = true;
+    zginlint_check.dependOn(&run_zginlint_check.step);
+
+    // ---- size: no .zig file over 3000 lines; POSIX sh, so an opt-in step ----
+    const lines_check = b.step("lines:check", "Fail if any .zig file exceeds 3000 lines");
+    const run_lines_check = b.addSystemCommand(&.{
+        "sh", "-c",
+        "find src -name '*.zig' -exec wc -l {} + | awk '$1 > 3000 && $2 != \"total\" { print $2 \": \" $1 \" lines (max 3000)\"; bad=1 } END { exit bad }'",
+    });
+    run_lines_check.has_side_effects = true;
+    lines_check.dependOn(&run_lines_check.step);
 }

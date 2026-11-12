@@ -1,14 +1,4 @@
 //! meja — the command-line database browser.
-//!
-//! Frontend over `meja.core`. Contains no data-access logic of its own:
-//! everything here is argument handling, presentation, and the read-eval
-//! loop.
-//!
-//! The interactive session is a dot-command REPL rather than a full
-//! TUI. That is a deliberate choice: it needs no display server, so the
-//! same binary is testable in CI on Linux, macOS and Windows, and it
-//! pipes cleanly into `less` or a file. The GUI frontend in `src/gui`
-//! covers the interactive case.
 
 const std = @import("std");
 const Io = std.Io;
@@ -58,18 +48,14 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Session
-// ---------------------------------------------------------------------------
 
-/// An open database plus the presentation state the REPL carries
-/// between commands.
+/// An open database plus the presentation state the REPL carries between commands.
 const Session = struct {
     gpa: Allocator,
     io: Io,
     db: database.Db,
-    /// Rows per page. A browser that dumps a million rows is unusable, so
-    /// this starts bounded and the user can raise it.
+    /// Rows per page.
     limit: usize = query.Limit.default_page_size,
     borders: bool = true,
     /// The path as the user typed it, for the prompt.
@@ -92,8 +78,7 @@ fn openSession(gpa: Allocator, out: *Io.Writer, path: []const u8) !void {
         .db = .{},
         .label = path,
     };
-    // `init` takes a NUL-terminated path because it is handed to
-    // sqlite3_open; an argv slice is not sentinel-terminated.
+    // `init` takes a NUL-terminated path because it is handed to sqlite3_open; an argv slice is not sentinel-terminated.
     const zpath = gpa.dupeZ(u8, path) catch return error.OutOfMemory;
     session.db.init(session.io, zpath) catch |err| {
         try out.print("meja: cannot open '{s}': {s}\n", .{ path, openErrorHint(err, path) });
@@ -145,30 +130,16 @@ fn plural(n: usize) []const u8 {
 }
 
 /// The read-eval loop.
-///
-/// Reads a statement, runs it, prints the result. Input is accumulated
-/// until a `;` is seen, so a multi-line statement works naturally, and a
-/// blank line on its own runs whatever has accumulated — which is how a
-/// long query with no trailing semicolon gets sent.
 fn repl(gpa: Allocator, out: *Io.Writer, session: *Session) !void {
     var pending: std.ArrayList(u8) = .empty;
     defer pending.deinit(gpa);
 
-    // ONE reader for the whole session. Creating a new File.Reader per
-    // line would drop everything already buffered past the newline, so a
-    // piped script would lose all but its first line.
+    // ONE reader for the whole session.
     var stdin_buf: [64 * 1024]u8 = undefined;
     var stdin_file: Io.File.Reader = .init(.stdin(), session.io, &stdin_buf);
     const input = &stdin_file.interface;
 
     // End of input detection.
-    //
-    // `takeDelimiterExclusive` yields an empty slice both for a blank
-    // line and for end of input, and reports neither as an error, so a
-    // loop that trusted it printed the prompt forever at the end of a
-    // piped script. Two CONSECUTIVE empty reads is the discriminator: a
-    // blank line inside a script is followed by more input, whereas EOF
-    // keeps yielding nothing.
     var consecutive_empty: usize = 0;
 
     while (true) {
@@ -182,8 +153,7 @@ fn repl(gpa: Allocator, out: *Io.Writer, session: *Session) !void {
         if (trimmed.len == 0) {
             consecutive_empty += 1;
             if (consecutive_empty >= 2) {
-                // EOF: run anything still pending so a piped script that
-                // omits its final semicolon is not silently dropped.
+                // EOF: run anything still pending so a piped script that omits its final semicolon is not silently dropped.
                 if (pending.items.len != 0) try runScript(gpa, out, session, pending.items);
                 break;
             }
@@ -201,8 +171,7 @@ fn repl(gpa: Allocator, out: *Io.Writer, session: *Session) !void {
         if (pending.items.len != 0) try pending.append(gpa, '\n');
         try pending.appendSlice(gpa, trimmed);
 
-        // Run on a trailing semicolon, or on a blank line (which is how
-        // a long query with no semicolon gets sent).
+        // Run on a trailing semicolon, or on a blank line (which is how a long query with no semicolon gets sent).
         const ends_statement = pending.items.len != 0 and
             pending.items[pending.items.len - 1] == ';';
         if (!ends_statement and trimmed.len != 0) continue;
@@ -214,10 +183,6 @@ fn repl(gpa: Allocator, out: *Io.Writer, session: *Session) !void {
 }
 
 /// Run a script, one statement at a time.
-///
-/// The splitting is the app's own: the binding runs only the first
-/// statement of a multi-statement string, so a script that "worked" would
-/// silently drop everything after the first `;`.
 fn runScript(gpa: Allocator, out: *Io.Writer, session: *Session, text: []const u8) !void {
     const statements = sql.splitStatements(gpa, text) catch return;
     defer sql.freeStatements(gpa, statements);
@@ -339,9 +304,7 @@ fn listTables(gpa: Allocator, out: *Io.Writer, session: *Session) !void {
         return;
     }
     for (objects) |o| {
-        // Only tables and views were requested, but a view has no
-        // reliable count, so neither is counted here: `COUNT(*)` on a
-        // large table is a real query and this is a listing.
+        // Only tables and views were requested, but a view has no reliable count, so neither is counted here: `COUNT(*)` on a large table is a real query and.
         try out.print("{s}\t{s}\n", .{ o.name, if (o.kind == .view) "view" else "table" });
     }
 }
@@ -413,9 +376,7 @@ fn listIndexes(gpa: Allocator, out: *Io.Writer, session: *Session, name: []const
     }
 }
 
-// ---------------------------------------------------------------------------
 // Non-interactive commands
-// ---------------------------------------------------------------------------
 
 /// Returns the process exit code: 0 on success, 1 if a statement failed.
 fn runCommand(
@@ -429,8 +390,7 @@ fn runCommand(
     defer threaded.deinit();
 
     var session = Session{ .gpa = gpa, .io = threaded.io(), .db = .{}, .label = path };
-    // `init` takes a NUL-terminated path because it is handed to
-    // sqlite3_open; an argv slice is not sentinel-terminated.
+    // `init` takes a NUL-terminated path because it is handed to sqlite3_open; an argv slice is not sentinel-terminated.
     const zpath = gpa.dupeZ(u8, path) catch return error.OutOfMemory;
     session.db.init(session.io, zpath) catch |err| {
         try out.print("meja: cannot open '{s}': {s}\n", .{ path, openErrorHint(err, path) });
@@ -460,8 +420,7 @@ fn runCommand(
     return 0;
 }
 
-/// Like `runOne` but reports a failure through the exit code instead of
-/// only the message, so a script can be used in a pipeline.
+/// Like `runOne` but reports a failure through the exit code instead of only the message, so a script can be used in a pipeline.
 fn runOneQuiet(gpa: Allocator, out: *Io.Writer, session: *Session, statement: []const u8) !u8 {
     var result = query.run(gpa, &session.db, statement, .{ .limit = .{ .rows = session.limit } }) catch {
         return 1;
@@ -485,8 +444,7 @@ fn readAllStdin(gpa: Allocator, io: Io) ![]const u8 {
     var stdin_buf: [64 * 1024]u8 = undefined;
     var stdin_file: Io.File.Reader = .init(.stdin(), io, &stdin_buf);
     const reader = &stdin_file.interface;
-    // 64 MB cap: a browser that ingests an unbounded script into memory
-    // is a denial of service against itself.
+    // 64 MB cap: a browser that ingests an unbounded script into memory is a denial of service against itself.
     return reader.allocRemaining(gpa, .limited(64 * 1024 * 1024)) catch |err| switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         error.StreamTooLong => error.InputTooLong,
@@ -494,13 +452,9 @@ fn readAllStdin(gpa: Allocator, io: Io) ![]const u8 {
     };
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
-// The CLI's own test surface. Without this the tests in args.zig and
-// format.zig are never discovered by `zig build test`, because a test
-// binary only walks the module reachable from its root file.
+// The CLI's own test surface.
 test {
     _ = args;
     _ = format;

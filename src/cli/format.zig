@@ -1,24 +1,4 @@
 //! Rendering a result set as an aligned text table.
-//!
-//! Shared by the CLI and the GUI's text panes, so both show the same
-//! bytes for the same data.
-//!
-//! ## The layout problem
-//!
-//! A grid has to line up, and a cell can contain anything: a 10 KB text
-//! value, a newline, a terminal escape sequence. Three rules keep the
-//! output honest:
-//!
-//!   1. **Cells are escaped, never truncated silently.** `value.format`
-//!      already escapes control characters, so a newline becomes `\n`
-//!      and a cell can never break out of its row.
-//!   2. **Widths are capped.** An uncapped column of 10 KB values makes
-//!      every other column unreadable and the terminal wrap uncontrollably.
-//!      Long values are truncated with a visible `…` so the user can see
-//!      that data was cut.
-//!   3. **Width is measured in display columns, not bytes.** A UTF-8
-//!      string of 4 characters is 6 bytes; using `len` would misalign
-//!      every row containing non-ASCII text.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -40,9 +20,6 @@ pub const Options = struct {
 };
 
 /// Render a result set.
-///
-/// Returns the number of bytes written. The buffer is flushed by the
-/// caller.
 pub fn renderTable(
     writer: *std.Io.Writer,
     allocator: Allocator,
@@ -53,9 +30,7 @@ pub fn renderTable(
     const total_rows = result_set.rows.len;
     const shown_rows = if (options.max_rows) |m| @min(m, total_rows) else total_rows;
 
-    // Pass 1: measure. Every cell is rendered twice — once to size the
-    // column, once to print it — because a value cannot know its column
-    // width before the column is sized.
+    // Pass 1: measure.
     var widths = try allocator.alloc(usize, columns.len);
     defer allocator.free(widths);
     for (columns, 0..) |c, i| {
@@ -122,8 +97,7 @@ pub fn renderTable(
             try writer.print(" (showing first {d})", .{shown_rows});
         }
         if (result_set.truncated) {
-            // The engine flags a full page; say so, so the user knows
-            // the table is not the whole answer.
+            // The engine flags a full page; say so, so the user knows the table is not the whole answer.
             try writer.writeAll(" [truncated: more rows available]");
         }
         try writer.writeByte('\n');
@@ -145,22 +119,18 @@ fn writeCell(writer: *std.Io.Writer, text: []const u8, width: usize) !void {
     try writePadding(writer, displayWidth(text), width);
 }
 
-/// Write `width - used` spaces. When `used` already meets or exceeds
-/// `width`, writes nothing — padding must never be added, only the
-/// shortfall filled.
+/// Write `width - used` spaces.
 fn writePadding(writer: *std.Io.Writer, used: usize, width: usize) !void {
     var i = used;
     while (i < width) : (i += 1) try writer.writeByte(' ');
 }
 
-/// Print a value, padded to `width` display columns and truncated with a
-/// visible marker when it does not fit.
+/// Print a value, padded to `width` display columns and truncated with a visible marker when it does not fit.
 fn writeValue(writer: *std.Io.Writer, v: value.Value, width: usize) !void {
     var buf: [512]u8 = undefined;
     var scratch: std.Io.Writer = .fixed(&buf);
     v.format(&scratch) catch {
-        // A cell that cannot even be rendered into 512 bytes is shown
-        // as a marker rather than dropped.
+        // A cell that cannot even be rendered into 512 bytes is shown as a marker rather than dropped.
         try writer.writeAll("<?>");
         return;
     };
@@ -178,8 +148,7 @@ fn writeValue(writer: *std.Io.Writer, v: value.Value, width: usize) !void {
     try writePadding(writer, displayWidth(cut) + 1, width);
 }
 
-/// The longest prefix of `text` that fits in `width` display columns and
-/// does not split a UTF-8 sequence.
+/// The longest prefix of `text` that fits in `width` display columns and does not split a UTF-8 sequence.
 fn utf8Prefix(text: []const u8, width: usize) []const u8 {
     var cols: usize = 0;
     var i: usize = 0;
@@ -208,12 +177,6 @@ fn renderedWidth(v: value.Value) usize {
 }
 
 /// Width of `text` in terminal columns.
-///
-/// Counts UTF-8 code points, which is right for the Latin/CJK text a
-/// database browser mostly shows. It does NOT account for double-width
-/// East Asian characters, so a CJK column can be visually off by a few
-/// cells; that is a known limit of a byte-oriented layout, and it is
-/// better than counting bytes and being wrong for every non-ASCII value.
 pub fn displayWidth(text: []const u8) usize {
     var n: usize = 0;
     var i: usize = 0;
@@ -229,9 +192,7 @@ pub fn displayWidth(text: []const u8) usize {
     return n;
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 
@@ -345,8 +306,7 @@ test "a value containing a newline cannot break the table" {
     var buf: [4096]u8 = undefined;
     const out = try render(&rs, &buf, .{});
 
-    // The newline is escaped to a literal backslash-n, so the row count
-    // is unchanged and every line is still the table's width.
+    // The newline is escaped to a literal backslash-n, so the row count is unchanged and every line is still the table's width.
     try testing.expect(std.mem.indexOf(u8, out, "\\n") != null);
     var lines = std.mem.splitScalar(u8, out, '\n');
     var width: ?usize = null;
@@ -395,8 +355,7 @@ test "an empty result set still renders a valid table" {
 
 test "displayWidth counts characters, not bytes" {
     try testing.expectEqual(@as(usize, 5), displayWidth("hello"));
-    // "héllo" is 6 bytes but 5 display columns — counting bytes would
-    // make every row containing an accented character misalign.
+    // "héllo" is 6 bytes but 5 display columns — counting bytes would make every row containing an accented character misalign.
     try testing.expectEqual(@as(usize, 5), displayWidth("héllo"));
     try testing.expectEqual(@as(usize, 6), "héllo".len);
     try testing.expectEqual(@as(usize, 0), displayWidth(""));
@@ -439,8 +398,7 @@ test "every table line is the same length" {
     const out = try render(&rs, &buf, .{});
     var lines = std.mem.splitScalar(u8, out, '\n');
 
-    // The single invariant that matters: no table line is longer or
-    // shorter than another, so every cell's right border is a column.
+    // The single invariant that matters: no table line is longer or shorter than another, so every cell's right border is a column.
     var width: ?usize = null;
     while (lines.next()) |line| {
         if (line.len == 0) continue;
@@ -451,10 +409,7 @@ test "every table line is the same length" {
     try testing.expect(width != null);
 }
 test "a header is padded only to its column width" {
-    // The regression that motivated these alignment tests: `id` exactly
-    // filled its column and a padding bug rendered it `id  ` — two
-    // spaces — shifting every following cell right. Comparing total line
-    // lengths hid it, because the error was consistent across rows.
+    // The regression that motivated these alignment tests: `id` exactly filled its column and a padding bug rendered it `id ` — two spaces — shifting every.
     var f = try Fixture.init();
     defer f.deinit();
     var rs = try query.run(testing.allocator, &f.db, "SELECT id FROM t", .{});

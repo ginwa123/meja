@@ -1,21 +1,4 @@
 //! Schema introspection: what tables, views, indexes and columns exist.
-//!
-//! Everything here is plain SQL against `sqlite_master` and the
-//! `PRAGMA table_*` family. Two constraints from the `databases` binding
-//! shape the implementation:
-//!
-//!   - **No column names on rows.** `PRAGMA table_info` returns six
-//!     positional columns, so they are read by index against the order
-//!     SQLite documents. `columnIndex` below names each one so a reorder
-//!     in a future SQLite is a compile error rather than a silent
-//!     misread.
-//!   - **No identifier binding.** `PRAGMA` does not accept a `?`
-//!     placeholder for a table name, so the name has to be interpolated.
-//!     Every such interpolation goes through `sql.quoteIfNeeded`.
-//!
-//! `PRAGMA` statements are read through the *query* path rather than
-//! `exec`, because `exec` swallows the diagnostic message and a schema
-//! browser is exactly where a readable error matters most.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -30,9 +13,7 @@ pub const ObjectKind = enum {
     view,
     index,
     trigger,
-    /// A `type` this build does not model (e.g. a virtual table's
-    /// shadow tables report odd values). Kept so nothing is silently
-    /// dropped from the object list.
+    /// A `type` this build does not model (e.g.
     other,
 
     pub fn fromSql(text: []const u8) ObjectKind {
@@ -53,13 +34,11 @@ pub const Object = struct {
     /// Schema-qualified name, e.g. `main.users`.
     name: []const u8,
     kind: ObjectKind,
-    /// The `CREATE ...` statement, owned by the caller. This is the only
-    /// way to see the exact DDL including constraints and defaults.
+    /// The `CREATE ...` statement, owned by the caller.
     sql: []const u8,
     /// `tbl_name` — the table an index or trigger belongs to.
     tbl_name: ?[]const u8 = null,
-    /// Estimated row count, when the caller asked for it. `SELECT
-    /// COUNT(*)` on a large table is not free, so this is opt-in.
+    /// Estimated row count, when the caller asked for it.
     row_count: ?i64 = null,
 
     pub fn deinit(self: Object, allocator: Allocator) void {
@@ -72,16 +51,14 @@ pub const Object = struct {
 /// One column of a table, from `PRAGMA table_info`.
 pub const Column = struct {
     name: []const u8,
-    /// Declared type, exactly as written in the DDL. SQLite lets this be
-    /// anything, so it is reported verbatim rather than normalised.
+    /// Declared type, exactly as written in the DDL.
     declared_type: []const u8,
     not_null: bool,
     /// 0-based position in the table.
     position: i64,
     /// The default expression, verbatim, or null when there is none.
     default_value: ?[]const u8,
-    /// 1-based primary-key position, or 0 when the column is not part
-    /// of the primary key.
+    /// 1-based primary-key position, or 0 when the column is not part of the primary key.
     pk_position: i64,
 
     pub fn deinit(self: Column, allocator: Allocator) void {
@@ -94,8 +71,7 @@ pub const Column = struct {
 /// One index of a table, from `PRAGMA index_list`.
 pub const Index = struct {
     name: []const u8,
-    /// `PRAGMA index_list` reports 'c' for CREATE INDEX, 'u' for UNIQUE
-    /// and 'pk' for the implicit primary-key index.
+    /// `PRAGMA index_list` reports 'c' for CREATE INDEX, 'u' for UNIQUE and 'pk' for the implicit primary-key index.
     origin: []const u8,
     unique: bool,
     partial: bool,
@@ -106,8 +82,7 @@ pub const Index = struct {
     }
 };
 
-// Positional columns of `PRAGMA table_info`, in SQLite's documented
-// order. Reading these by name is what the binding cannot do.
+// Positional columns of `PRAGMA table_info`, in SQLite's documented order.
 const ti = struct {
     const cid = 0;
     const name = 1;
@@ -138,10 +113,6 @@ const il = struct {
 };
 
 /// List the objects in the database.
-///
-/// Only user objects are returned: SQLite's own `sqlite_*` internal
-/// tables are excluded, because showing `sqlite_sequence` next to the
-/// user's tables is noise, not information.
 pub fn listObjects(
     allocator: Allocator,
     db: *database.Db,
@@ -153,8 +124,7 @@ pub fn listObjects(
         out.deinit(allocator);
     }
 
-    // The kind filter is built from an enum list, so the values are
-    // literals from our own code and cannot inject anything.
+    // The kind filter is built from an enum list, so the values are literals from our own code and cannot inject anything.
     var filter: std.ArrayList(u8) = .empty;
     defer filter.deinit(allocator);
     if (kinds) |ks| {
@@ -171,13 +141,7 @@ pub fn listObjects(
     const statement = try std.fmt.allocPrint(
         allocator,
         "SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_master" ++
-            // SQLite reserves the `sqlite_` prefix: sqlite_sequence,
-            // sqlite_stat1, sqlite_autoindex_*, and the FTS shadow tables
-            // (sqlite_master itself aside). None of them are the user's
-            // schema, so none of them belong in a browser's tree.
-            // `_` is LIKE's single-character wildcard, so `LIKE
-            // 'sqlite_%'` would also match `sqliteXyz`. GLOB is the
-            // right tool: `*` is the wildcard there and `_` is literal.
+            // SQLite reserves the `sqlite_` prefix: sqlite_sequence, sqlite_stat1, sqlite_autoindex_*, and the FTS shadow tables (sqlite_master itself aside).
             " WHERE name NOT GLOB 'sqlite_*'" ++
             "{s} ORDER BY type, name",
         .{filter.items},
@@ -210,9 +174,6 @@ pub fn freeObjects(allocator: Allocator, objects: []Object) void {
 }
 
 /// The columns of a table or view.
-///
-/// The table name is interpolated (PRAGMA will not take a placeholder),
-/// so it is quoted first.
 pub fn listColumns(
     allocator: Allocator,
     db: *database.Db,
@@ -300,10 +261,6 @@ pub fn freeIndexes(allocator: Allocator, indexes: []Index) void {
 }
 
 /// Count the rows in a table.
-///
-/// This is a real `SELECT COUNT(*)` and is therefore as slow as the
-/// table is large, so callers make it opt-in rather than paying for it
-/// while drawing a schema tree.
 pub fn countRows(allocator: Allocator, db: *database.Db, table: []const u8) Error!i64 {
     const quoted = try sql.quoteIfNeeded(allocator, table);
     defer allocator.free(quoted);
@@ -322,11 +279,6 @@ pub fn countRows(allocator: Allocator, db: *database.Db, table: []const u8) Erro
 }
 
 /// True when a table (or view) with this name exists.
-///
-/// The name is bound as a parameter here, so it needs no quoting — this
-/// is the one place where the binding's text-only parameters are exactly
-/// right, and it is why an injection attempt in a table name cannot
-/// escape.
 pub fn tableExists(
     allocator: Allocator,
     db: *database.Db,
@@ -346,9 +298,7 @@ pub fn tableExists(
     return false;
 }
 
-/// The database's user_version — the integer slot SQLite reserves for
-/// applications. Reported by the schema view so a user can see what a
-/// tool has stashed there.
+/// The database's user_version — the integer slot SQLite reserves for applications.
 pub fn userVersion(allocator: Allocator, db: *database.Db) Error!i64 {
     var rows = try db.query(allocator, "PRAGMA user_version", &.{});
     defer rows.deinit();
@@ -367,14 +317,11 @@ fn isTruthy(text: []const u8) bool {
     return !std.mem.eql(u8, text, "0");
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 
-/// Opens an in-memory database with a small known schema, mirroring the
-/// setup used by the databases package's own tests.
+/// Opens an in-memory database with a small known schema, mirroring the setup used by the databases package's own tests.
 const Fixture = struct {
     threaded: std.Io.Threaded,
     db: database.Db,
@@ -433,15 +380,12 @@ test "listObjects finds tables, views and indexes" {
     }
     try testing.expectEqual(@as(usize, 3), tables); // users, posts, logs
     try testing.expectEqual(@as(usize, 1), views); // active
-    // One user index. `email TEXT UNIQUE` also makes an implicit one,
-    // but SQLite names it `sqlite_autoindex_*`, which the `sqlite_`
-    // filter drops along with the rest of the engine's own objects.
+    // One user index.
     try testing.expectEqual(@as(usize, 1), indexes);
 }
 
 test "listObjects excludes sqlite internals" {
-    // Force an internal table to exist: AUTOINCREMENT creates
-    // `sqlite_sequence`.
+    // Force an internal table to exist: AUTOINCREMENT creates `sqlite_sequence`.
     var f = try Fixture.init();
     defer f.deinit();
     try f.db.exec(testing.allocator,
@@ -451,8 +395,7 @@ test "listObjects excludes sqlite internals" {
 
     const objects = try listObjects(testing.allocator, &f.db, null);
     defer freeObjects(testing.allocator, objects);
-    // Every `sqlite_*` object is internal: the sequence table, and the
-    // implicit `sqlite_autoindex_*` indexes.
+    // Every `sqlite_*` object is internal: the sequence table, and the implicit `sqlite_autoindex_*` indexes.
     for (objects) |o| {
         try testing.expect(!std.mem.startsWith(u8, o.name, "sqlite_"));
     }
@@ -508,8 +451,7 @@ test "listColumns quotes a hostile table name instead of executing it" {
     var f = try Fixture.init();
     defer f.deinit();
 
-    // A name containing a quote and a semicolon must be treated as one
-    // identifier. The PRAGMA must fail to find a table, not drop one.
+    // A name containing a quote and a semicolon must be treated as one identifier.
     const cols = try listColumns(testing.allocator, &f.db, "users\"; DROP TABLE users; --");
     defer freeColumns(testing.allocator, cols);
     try testing.expectEqual(@as(usize, 0), cols.len);

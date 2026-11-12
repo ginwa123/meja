@@ -1,34 +1,4 @@
 //! Recovering column names from SQL text.
-//!
-//! ## Why this module exists
-//!
-//! The `databases` binding never calls `sqlite3_column_name`, so a
-//! `Row` is just `[][]u8` — the values, with nothing to say what they are
-//! called. A database browser that renders `a  b  c` instead of
-//! `id  name  email` is not a browser.
-//!
-//! There is no way to get the names out of the binding, so the app
-//! derives them from the SQL it already has:
-//!
-//!   - A bare column reference is its own name: `SELECT id` -> `id`.
-//!   - An explicit alias wins: `SELECT COUNT(*) AS n` -> `n`.
-//!   - A trailing bare alias is an alias too: `SELECT COUNT(*) n` -> `n`.
-//!   - A quoted alias is unwrapped: `SELECT x AS "my col"` -> `my col`.
-//!   - Anything else keeps its own text, which is what SQLite itself
-//!     shows for an unaliased expression: `COUNT(*)` -> `COUNT(*)`.
-//!
-//! ## The honest limit
-//!
-//! This is a *heuristic on SQL text*, not a parser for the SQL grammar.
-//! It handles the shapes people actually write in a query pane, and when
-//! it cannot name a column it falls back to the column's own expression
-//! text — which is also what SQLite's own CLI does. It never invents a
-//! name that is not in the query.
-//!
-//! `*` is the case that cannot be resolved from text alone: `SELECT *`
-//! names as many columns as the table has, which is only knowable from
-//! the schema. That is surfaced as `is_star` so the query engine can
-//! substitute `PRAGMA table_info` when it knows the table.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -36,15 +6,11 @@ const sqlmod = @import("sql.zig");
 
 /// One entry in a SELECT list.
 pub const Item = struct {
-    /// The expression as written, e.g. `COUNT(*)`, `t.id`, `a + b`.
-    /// Borrows from the SQL text.
+    /// The expression as written, e.g.
     expr: []const u8,
-    /// The best name we can infer for this column. Always a sub-slice of
-    /// the original statement — never a fresh allocation. That is what
-    /// lets `parse` hand back a result the caller can cheaply free.
+    /// The best name we can infer for this column.
     name: []const u8,
-    /// True when this entry is `*` or `qualifier.*` and must be expanded
-    /// against the schema to get real names.
+    /// True when this entry is `*` or `qualifier.*` and must be expanded against the schema to get real names.
     is_star: bool = false,
     /// For `t.*`, the qualifier; null for a bare `*`.
     star_qualifier: ?[]const u8 = null,
@@ -56,9 +22,7 @@ pub const SelectList = struct {
     /// Byte range of the select list within the original statement.
     offset: usize,
     len: usize,
-    /// The statement *after* the select list, starting at the
-    /// `FROM`/`WHERE`/etc. This is what gets re-emitted when the query
-    /// engine rewrites the list to interleave `typeof()` columns.
+    /// The statement *after* the select list, starting at the `FROM`/`WHERE`/etc.
     rest: []const u8,
 
     pub fn deinit(self: SelectList, allocator: Allocator) void {
@@ -90,11 +54,6 @@ pub const ParseError = error{
 };
 
 /// Locate the select list of a statement and split it into items.
-///
-/// Handles the forms a query pane produces: `SELECT ...`, `WITH ...
-/// SELECT ...` and `EXPLAIN SELECT ...`. The `WITH` case tracks paren
-/// depth so a `SELECT` inside a CTE body is not mistaken for the one
-/// that starts the output columns.
 pub fn parse(allocator: Allocator, statement: []const u8) !SelectList {
     const sel = findSelectKeyword(statement) orelse return error.NoSelect;
 
@@ -202,8 +161,7 @@ fn parseItem(raw: []const u8) Item {
         }
     }
 
-    // `expr AS alias` — the explicit, unambiguous form. Checked first so
-    // it beats the bare-alias rule below.
+    // `expr AS alias` — the explicit, unambiguous form.
     if (findTopLevelAs(raw)) |as_idx| {
         const alias = unquote(std.mem.trim(u8, raw[as_idx + 2 ..], " \t\r\n"));
         if (alias.len != 0) return .{ .expr = raw, .name = alias };
@@ -224,9 +182,6 @@ fn parseItem(raw: []const u8) Item {
 }
 
 /// Offset of a top-level ` AS ` (case-insensitive) in `s`, or null.
-///
-/// "Top-level" means paren depth 0 and outside quotes, so
-/// `SELECT (SELECT 1 AS x) AS y` finds the outer `AS y`.
 fn findTopLevelAs(s: []const u8) ?usize {
     var depth: i32 = 0;
     var i: usize = 0;
@@ -265,13 +220,11 @@ fn findBareAlias(raw: []const u8) ?[]const u8 {
     const alias = raw[last_space + 1 ..];
     if (!isPlainIdent(alias)) return null;
 
-    // An operator immediately before the candidate means this is part of
-    // an expression, not an alias: `a + b` is not `a` aliased `b`.
+    // An operator immediately before the candidate means this is part of an expression, not an alias: `a + b` is not `a` aliased `b`.
     const prev_byte = if (last_space > 0) raw[last_space - 1] else 0;
     if (isOperatorByte(prev_byte)) return null;
 
-    // The token before the alias must not itself be a clause boundary,
-    // or this is a two-word expression rather than an aliased one.
+    // The token before the alias must not itself be a clause boundary, or this is a two-word expression rather than an aliased one.
     const before = std.mem.trimEnd(u8, raw[0..last_space], " \t\r\n");
     const prev_space = lastTopLevelSpace(before) orelse return alias;
     const prev = before[prev_space + 1 ..];
@@ -334,8 +287,7 @@ fn isPlainColumnRef(s: []const u8) bool {
         part_len += 1;
     }
     if (part_len == 0) return false;
-    // A multi-part name may legitimately end in a reserved word
-    // (`t.select` is legal), so only a bare reserved word is rejected.
+    // A multi-part name may legitimately end in a reserved word (`t.select` is legal), so only a bare reserved word is rejected.
     if (std.mem.indexOfScalar(u8, s, '.') == null and sqlmod.isReservedKeyword(s)) return false;
     return true;
 }
@@ -364,8 +316,7 @@ fn isWordByte(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '_' or c == '$';
 }
 
-/// Bytes that combine or compare operands. Used to tell an expression
-/// (`a + b`) from an aliased column (`x total`).
+/// Bytes that combine or compare operands.
 fn isOperatorByte(c: u8) bool {
     return switch (c) {
         '+', '-', '*', '/', '%', '=', '<', '>', '!', '&', '|', '^', '~' => true,
@@ -386,8 +337,7 @@ fn startsWithKeyword(s: []const u8, at: usize, kw: []const u8) bool {
     return true;
 }
 
-/// Advance past a `--` line comment. Returns the index of the newline
-/// (or end of input), so the newline is re-examined as whitespace.
+/// Advance past a `--` line comment.
 fn skipLineComment(s: []const u8, i: usize) usize {
     var j = i + 2;
     while (j < s.len and s[j] != '\n') j += 1;
@@ -403,8 +353,7 @@ fn skipBlockComment(s: []const u8, i: usize) usize {
     return s.len;
 }
 
-/// Advance past a quoted run starting at `i`. Returns the index just past
-/// the closing quote, or `s.len` if the run is unterminated.
+/// Advance past a quoted run starting at `i`.
 fn skipQuoted(s: []const u8, i: usize) usize {
     const open = s[i];
     const close: u8 = switch (open) {
@@ -425,9 +374,6 @@ fn skipQuoted(s: []const u8, i: usize) usize {
 }
 
 /// Offset of the `SELECT` that begins the output list, or null.
-///
-/// Skips a leading `WITH ...` CTE list (paren-depth aware) and a leading
-/// `EXPLAIN`, so both forms resolve to their real select list.
 fn findSelectKeyword(s: []const u8) ?usize {
     var depth: i32 = 0;
     var i: usize = 0;
@@ -448,8 +394,7 @@ fn findSelectKeyword(s: []const u8) ?usize {
         if (isWordByte(c)) {
             var j = i;
             while (j < s.len and isWordByte(s[j])) j += 1;
-            // The keyword that starts the output columns must be at
-            // depth 0; a `SELECT` inside a CTE subquery does not.
+            // The keyword that starts the output columns must be at depth 0; a `SELECT` inside a CTE subquery does not.
             if (depth == 0 and std.ascii.eqlIgnoreCase(s[i..j], "SELECT")) return i;
             i = j;
             continue;
@@ -488,27 +433,17 @@ const list_terminators = [_][]const u8{
     "offset", "union", "except", "intersect", "window", "returning",
 };
 
-/// Find where the select list ends: the first terminator keyword at
-/// depth 0, or the end of the statement.
-///
-/// The subtlety is `COUNT(*)`: the `)` there closes a function call, not
-/// the list. So a terminator only counts when it appears as a whole word
-/// at depth 0, at least one whitespace-separated token after the last
-/// item boundary.
+/// Find where the select list ends: the first terminator keyword at depth 0, or the end of the statement.
 fn findListEnd(s: []const u8, from: usize) usize {
     var depth: i32 = 0;
     var i = from;
     // End of the most recent item (or list element) seen so far.
     var item_end: usize = from;
-    // True once at least one non-space character has been consumed, so a
-    // bare `*` still counts as an item.
+    // True once at least one non-space character has been consumed, so a bare `*` still counts as an item.
     var seen_any = false;
 
     while (i < s.len) {
-        // Comments are not items and must not terminate anything, so they
-        // are skipped before the character is classified.
-        // Comments are skipped without marking an item as seen, so a
-        // terminator after a leading comment is still the first token.
+        // Comments are not items and must not terminate anything, so they are skipped before the character is classified.
         if (i + 1 < s.len and s[i] == '-' and s[i + 1] == '-') {
             i = skipLineComment(s, i);
             continue;
@@ -555,23 +490,18 @@ fn findListEnd(s: []const u8, from: usize) usize {
         }
 
         if (depth != 0 or !isWordByte(c)) {
-            // Punctuation inside an expression: `*`, `+`, `/`. It ends the
-            // current item for boundary purposes, so a bare `SELECT *`
-            // is one item rather than a zero-length list.
+            // Punctuation inside an expression: `*`, `+`, `/`.
             i += 1;
             item_end = i;
             seen_any = true;
             continue;
         }
 
-        // A word at depth 0. It is a terminator only if something has
-        // already been consumed and this word is separated from it.
+        // A word at depth 0.
         var j = i;
         while (j < s.len and isWordByte(s[j])) j += 1;
         const word = s[i..j];
-        // A terminator keyword always ends the list at depth 0, even as
-        // the first token: `SELECT FROM t` has an empty select list, and
-        // naming a column `FROM` would hide the malformed statement.
+        // A terminator keyword always ends the list at depth 0, even as the first token: `SELECT FROM t` has an empty select list, and naming a column `FROM`.
         if (!seen_any or i > item_end) {
             for (list_terminators) |term| {
                 if (std.ascii.eqlIgnoreCase(word, term)) return item_end;
@@ -584,9 +514,7 @@ fn findListEnd(s: []const u8, from: usize) usize {
     return s.len;
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 
@@ -723,8 +651,7 @@ test "error cases" {
 }
 
 test "terminators after each clause keyword" {
-    // Every clause keyword must end the list, or the last column of a
-    // real query silently merges with the tail.
+    // Every clause keyword must end the list, or the last column of a real query silently merges with the tail.
     const tails = [_][]const u8{
         " FROM t",     " WHERE c", " GROUP BY c",     " HAVING c",
         " ORDER BY c", " LIMIT 5", " UNION SELECT 1", " WINDOW w",
@@ -740,8 +667,7 @@ test "terminators after each clause keyword" {
 }
 
 test "every returned name is a slice of the original statement" {
-    // A property, not just a value check: names borrow from the input, so
-    // a result set needs no per-column allocation.
+    // A property, not just a value check: names borrow from the input, so a result set needs no per-column allocation.
     const stmt = "SELECT COUNT(*) AS n, u.name, t.*, 1 + 2 FROM t";
     var list = try parse(testing.allocator, stmt);
     defer list.deinit(testing.allocator);

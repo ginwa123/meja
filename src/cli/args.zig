@@ -1,15 +1,4 @@
 //! Command-line argument parsing for meja.
-//!
-//! Kept separate from `main` so the parser is testable without a
-//! database, a terminal, or an argument vector.
-//!
-//! ## The shape
-//!
-//!     meja <database> [command] [options]
-//!     meja <database> -c "<sql>"      run one statement and exit
-//!     meja <database>                 open an interactive session
-//!
-//! With no database, `meja` prints help and exits rather than guessing.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -73,9 +62,6 @@ pub const ParseError = error{
 };
 
 /// Parse `args` (excluding argv[0]).
-///
-/// All returned slices borrow from `args`, so nothing here allocates and
-/// the caller owns every string.
 pub fn parse(args: []const []const u8) ParseError!Invocation {
     var path: ?[]const u8 = null;
     var index: usize = 0;
@@ -118,8 +104,7 @@ pub fn parse(args: []const []const u8) ParseError!Invocation {
             } };
         }
         if (arg.len > 0 and arg[0] == '-') {
-            // An unknown flag is a typo, not a database name. Silently
-            // treating it as a path produces a baffling "no such file".
+            // An unknown flag is a typo, not a database name.
             return error.UnexpectedArgument;
         }
         if (path != null) return error.UnexpectedArgument;
@@ -170,9 +155,7 @@ pub const usage =
     \\
 ;
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 
@@ -228,8 +211,7 @@ test "a second positional is an error, not a silent override" {
 }
 
 test "an unknown flag is rejected rather than treated as a path" {
-    // Silently reading `--tabels` as a database name gives a baffling
-    // "unable to open database".
+    // Silently reading `--tabels` as a database name gives a baffling "unable to open database".
     try testing.expectError(error.UnexpectedArgument, parse(&.{"--tabels"}));
 }
 

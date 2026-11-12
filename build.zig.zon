@@ -21,6 +21,13 @@
     .dependencies = .{
         .databases = .{ .path = "../ruangsql" },
         .glinlandui = .{ .path = "../glinlandui" },
+        // The linter (github.com/ginwa123/zglint), pinned by URL + hash.
+        // `zig build zginlint:check` is the gate; the tool is std-only.
+        // Move the pin: `zig fetch "git+https://github.com/ginwa123/zglint.git#<sha>"`.
+        .zginlint = .{
+            .url = "git+https://github.com/ginwa123/zglint.git#7e1faeba4d75640c7ae37efe2987f6be85fa2a89",
+            .hash = "zginlint-0.0.0-0kYHpg4dAQARigMlrQ54kyJUpbIlGU0fYVNhFMDuUvah",
+        },
     },
 
     .paths = .{

@@ -1,26 +1,4 @@
-//! The query engine: run SQL, get back a grid with real column names,
-//! real types, and paging.
-//!
-//! ## What it adds over the binding
-//!
-//!  1. **Real column names.** The binding returns a bare `[][]u8`, so
-//!     names come from `core/select_list`.
-//!
-//!  2. **Real types and a real NULL.** Also from the binding's silence:
-//!     every value arrives as text and NULL is indistinguishable from
-//!     `''`. The fix is to rewrite the query the app controls so each
-//!     column is preceded by its `typeof()`, then decode with
-//!     `core/value`.
-//!
-//!  3. **Paging.** A browser that runs `SELECT * FROM big_table` and
-//!     then tries to render a million rows is unusable. `Query` carries
-//!     a `LIMIT`/`OFFSET` window and reports whether more rows exist,
-//!     so the UI can page without re-running an unbounded query.
-//!
-//! 4. **Timing and errors a human can read.** `exec` on the binding logs
-//!     the failure and returns only `Error.PrepareFailed`; the query path
-//!     keeps SQLite's own message, which is the difference between "SQL
-//!     error" and "no such column: emial".
+//! The query engine: run SQL, get back a grid with real column names, real types, and paging.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -40,16 +18,13 @@ pub const Error = database.Error || Allocator.Error || select_list.ParseError ||
 pub const Column = struct {
     /// The display name, recovered from the SQL.
     name: []const u8,
-    /// The storage class of the first non-NULL value seen, or
-    /// `.null_value` if every value in the column was NULL. A mixed
-    /// column reports the class of the first value that had one.
+    /// The storage class of the first non-NULL value seen, or `.null_value` if every value in the column was NULL.
     storage_class: StorageClass = .null_value,
     /// True once any value in this column was non-NULL.
     saw_non_null: bool = false,
 };
 
-/// One row of a result set. Every payload borrows from the owning
-/// `ResultSet`; a `Row` must not outlive it.
+/// One row of a result set.
 pub const Row = struct {
     values: []const Value,
 };
@@ -59,9 +34,7 @@ pub const ResultSet = struct {
     allocator: Allocator,
     columns: []Column,
     rows: []Row,
-    /// The statement actually executed. For a rewritten query this is
-    /// the `typeof()`-interleaved form, kept so the UI can show the user
-    /// precisely what ran.
+    /// The statement actually executed.
     executed_sql: []const u8,
     /// True when a full page was returned and more rows may exist.
     truncated: bool = false,
@@ -74,8 +47,7 @@ pub const ResultSet = struct {
 
     pub fn deinit(self: *ResultSet) void {
         const gpa = self.allocator;
-        // Value bytes are individually owned, so free each one before
-        // freeing the slice that indexes them.
+        // Value bytes are individually owned, so free each one before freeing the slice that indexes them.
         for (self.rows) |r| {
             for (r.values) |v| {
                 switch (v) {
@@ -101,9 +73,7 @@ pub const ResultSet = struct {
         return self.rows.len;
     }
 
-    /// Value at (row, column), or null when out of range. Returning null
-    /// rather than panicking keeps a stale grid index from crashing the
-    /// app after the underlying data changed.
+    /// Value at (row, column), or null when out of range.
     pub fn get(self: ResultSet, row: usize, column: usize) ?Value {
         if (row >= self.rows.len) return null;
         if (column >= self.rows[row].values.len) return null;
@@ -111,9 +81,7 @@ pub const ResultSet = struct {
     }
 };
 
-/// How many rows a query may return. `null` means unbounded, which is
-/// only ever correct for a statement the app generated and knows the
-/// size of.
+/// How many rows a query may return.
 pub const Limit = struct {
     /// Maximum rows to return.
     rows: ?usize = default_page_size,
@@ -122,8 +90,7 @@ pub const Limit = struct {
 
     pub const default_page_size: usize = 200;
 
-    /// No limit and no offset: used for statements the app knows are
-    /// small (a PRAGMA, a scalar subquery).
+    /// No limit and no offset: used for statements the app knows are small (a PRAGMA, a scalar subquery).
     pub const unlimited: Limit = .{ .rows = null, .offset = 0 };
 
     /// Return the next page after `consumed` rows.
@@ -137,20 +104,13 @@ pub const Limit = struct {
 
 /// Options for `run`.
 pub const Options = struct {
-    /// Row cap. Defaults to a page, because an unbounded default in a
-    /// browser is how you get an out-of-memory crash.
+    /// Row cap.
     limit: Limit = .{},
     /// Values to bind. All are bound as TEXT by the underlying binding.
     args: []const []const u8 = &.{},
 };
 
 /// Run one statement and return a result set.
-///
-/// A statement that returns rows produces a grid. A statement that does
-/// not (INSERT/UPDATE/DDL) produces an empty grid carrying
-/// `rows_affected`. Either way the return value describes what happened,
-/// so callers do not have to classify the statement themselves — though
-/// `sql.classify` is still consulted to decide *how* to run it.
 pub fn run(
     allocator: Allocator,
     db: *database.Db,
@@ -193,14 +153,10 @@ fn runQuery(
     var paged = try applyLimit(allocator, rewritten.sql, options.limit);
     defer paged.deinit();
 
-    // Zig 0.16 removed std.time.Timer; the replacement is an `awake`
-    // (monotonic) timestamp from the Io handle, which the backend holds.
+    // Zig 0.16 removed std.time.Timer; the replacement is an `awake` (monotonic) timestamp from the Io handle, which the backend holds.
     const started = std.Io.Clock.now(.awake, db.io);
 
-    // The binding exposes SQLite's message only through a `Rows` that
-    // exists, so the failure path needs one. `query` can fail before
-    // returning anything (prepare error), and then there is no message to
-    // keep — the error name is all there is.
+    // The binding exposes SQLite's message only through a `Rows` that exists, so the failure path needs one.
     var rows = db.query(allocator, paged.sql, options.args) catch |err| {
         return .{
             .allocator = allocator,
@@ -238,8 +194,7 @@ fn runQuery(
         out_rows.deinit(allocator);
     }
 
-    // The rewritten query emits `typeof()` before each value, so the row
-    // has 2x the columns the result set reports.
+    // The rewritten query emits `typeof()` before each value, so the row has 2x the columns the result set reports.
     const width = expanded.list.items.len;
     while (try rows.next()) |row| {
         defer row.deinit(allocator);
@@ -264,8 +219,7 @@ fn runQuery(
         try out_rows.append(allocator, .{ .values = values });
     }
 
-    // Fetch one extra row's worth of `LIMIT` so `truncated` is honest:
-    // if the page came back full, more rows probably exist.
+    // Fetch one extra row's worth of `LIMIT` so `truncated` is honest: if the page came back full, more rows probably exist.
     var truncated = false;
     if (options.limit.rows) |cap| {
         truncated = out_rows.items.len >= cap;
@@ -317,11 +271,6 @@ fn elapsedNs(started: std.Io.Timestamp, io: std.Io) u64 {
 }
 
 /// Copy a value's bytes out of the row so the result set can outlive it.
-///
-/// The binding's `Row` frees its own storage on `deinit`, and the
-/// deferred `row.deinit` runs before the caller ever sees the result, so
-/// a borrowed value would dangle. Only the classes that own bytes are
-/// copied; numbers and NULL are already plain values.
 fn dupeValue(allocator: Allocator, v: Value, raw: []const u8) Value {
     return switch (v) {
         .text => Value{ .text = allocator.dupe(u8, raw) catch return v },
@@ -336,10 +285,7 @@ const Expanded = struct {
     allocator: Allocator,
     statement: []const u8,
     list: select_list.SelectList,
-    /// Which item names this struct owns. Items that came from the
-    /// caller's statement text borrow from it; only star-expanded ones
-    /// are allocated here. Without this flag the two are
-    /// indistinguishable and deinit either leaks or double-frees.
+    /// Which item names this struct owns.
     owns_name: []bool,
 
     fn deinit(self: *Expanded) void {
@@ -353,11 +299,6 @@ const Expanded = struct {
 };
 
 /// Resolve `*` against the schema.
-///
-/// `SELECT *` cannot be named from SQL text alone, so the table is read
-/// with `PRAGMA table_info` and each star is replaced by the column
-/// list. When the table cannot be determined (a join, a subquery) the
-/// Append to a bool list, keeping it in step with `out.items`.
 fn owned_flags_append(
     allocator: Allocator,
     flags: *std.ArrayList(bool),
@@ -420,11 +361,9 @@ fn expandStars(
 
     // Rebuild the select list with the star replaced.
     var out: std.ArrayList(select_list.Item) = .empty;
-    // Indices into `out` whose expr/name are owned (star-expanded) and
-    // must be freed. Everything else borrows from the caller's text.
+    // Indices into `out` whose expr/name are owned (star-expanded) and must be freed.
     var owns_name: std.ArrayList(bool) = .empty;
-    // On the success path these are handed to `Expanded`, which frees
-    // them. On the error path they are freed here.
+    // On the success path these are handed to `Expanded`, which frees them.
     errdefer {
         for (out.items, 0..) |it, i| {
             if (i < owns_name.items.len and owns_name.items[i]) allocator.free(it.name);
@@ -446,9 +385,7 @@ fn expandStars(
                 defer allocator.free(col_q);
                 try w.writeAll(col_q);
             }
-            // The item's expr/name must be owned: the `column_names`
-            // list is freed when this function returns, and the items
-            // outlive it.
+            // The item's expr/name must be owned: the `column_names` list is freed when this function returns, and the items outlive it.
             for (column_names.items) |cn| {
                 const col_name = try allocator.dupe(u8, cn);
                 try out.append(allocator, .{ .expr = col_name, .name = col_name });
@@ -486,8 +423,7 @@ fn cloneList(allocator: Allocator, list: select_list.SelectList) !select_list.Se
 
 /// The table named by the statement's `FROM`, if there is exactly one.
 fn findFromTable(statement: []const u8) ?[]const u8 {
-    // The `FROM` keyword is not the statement's leading word, so it has
-    // to be located: scan for it as a standalone word at paren depth 0.
+    // The `FROM` keyword is not the statement's leading word, so it has to be located: scan for it as a standalone word at paren depth 0.
     var depth: i32 = 0;
     var i: usize = 0;
     var from_at: ?usize = null;
@@ -538,8 +474,7 @@ fn findFromTable(statement: []const u8) ?[]const u8 {
         return statement[k .. e + 1];
     }
 
-    // Otherwise read a dotted identifier, then keep only the last part
-    // so `FROM main.users` resolves to `users`.
+    // Otherwise read a dotted identifier, then keep only the last part so `FROM main.users` resolves to `users`.
     const start = k;
     while (k < statement.len) : (k += 1) {
         const c = statement[k];
@@ -554,17 +489,11 @@ fn findFromTable(statement: []const u8) ?[]const u8 {
 }
 
 /// The expression of a select-list item with any alias removed.
-///
-/// An item is `expr`, `expr AS name`, or `expr name`. Only the first
-/// form is usable as a function argument, which is what the `typeof()`
-/// rewrite needs.
 fn expressionOf(allocator: Allocator, item: select_list.Item) ![]u8 {
     const expr = item.expr;
     if (std.mem.eql(u8, item.name, expr)) return allocator.dupe(u8, expr);
 
-    // The alias is the trailing `name`; everything before it is the
-    // expression. `item.name` is a sub-slice of `item.expr`, so the
-    // expression is whatever precedes it, trimmed.
+    // The alias is the trailing `name`; everything before it is the expression.
     if (std.mem.lastIndexOf(u8, expr, item.name)) |at| {
         var head = std.mem.trimEnd(u8, expr[0..at], " \t\r\n");
         // Drop a trailing `AS`.
@@ -587,13 +516,6 @@ const Owned = struct {
 };
 
 /// Rewrite the select list so each column is preceded by its `typeof()`.
-///
-///   SELECT a, b FROM t
-///   -> SELECT typeof(a), a, typeof(b), b FROM t
-///
-/// The statements this is applied to are the ones the app classifies as
-/// row-returning, which for the CLI and GUI means the user's own query
-/// text — already a complete statement, so the shape holds.
 fn rewriteWithTypes(
     allocator: Allocator,
     list: *const select_list.SelectList,
@@ -605,9 +527,7 @@ fn rewriteWithTypes(
     try out.writeAll("SELECT ");
     for (list.items, 0..) |item, i| {
         if (i != 0) try out.writeAll(", ");
-        // `typeof(<expr>)` takes the EXPRESSION, never the alias:
-        // `typeof(x AS y)` is a syntax error, and the alias belongs on
-        // the output column instead.
+        // `typeof(<expr>)` takes the EXPRESSION, never the alias: `typeof(x AS y)` is a syntax error, and the alias belongs on the output column instead.
         const expr = try expressionOf(allocator, item);
         defer allocator.free(expr);
 
@@ -629,11 +549,6 @@ fn rewriteWithTypes(
 }
 
 /// Append `LIMIT`/`OFFSET` when the statement does not already have one.
-///
-/// A query that already contains its own `LIMIT` is left alone: silently
-/// appending a second one would change the meaning of the user's SQL.
-/// `GROUP BY ... HAVING ...` is also left alone because the count can
-/// change the result.
 fn applyLimit(allocator: Allocator, statement: []const u8, limit: Limit) !Owned {
     const already_limited = hasTopLevelKeyword(statement, "limit") or
         hasTopLevelKeyword(statement, "offset");
@@ -695,9 +610,7 @@ fn hasTopLevelKeyword(statement: []const u8, keyword: []const u8) bool {
     return false;
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 
@@ -857,15 +770,7 @@ test "an error is reported, not thrown" {
     var f = try Fixture.init();
     defer f.deinit();
 
-    // A typo'd column. The binding's `exec` path loses SQLite's message
-    // entirely, so the query path at least reports the failure instead
-    // of pretending the query returned no rows.
-    //
-    // Note the honest limit: `db.query` fails at PREPARE time, before a
-    // `Rows` exists, and SQLite's message lives only on a `Rows`. So
-    // this carries the error name, not SQLite's wording. The wording
-    // only survives for errors raised while STEPPING a prepared
-    // statement (see "a step error keeps SQLite's wording").
+    // A typo'd column.
     var rs = try run(testing.allocator, &f.db, "SELECT emial FROM t", .{});
     defer rs.deinit();
     try testing.expect(rs.error_message != null);
@@ -877,20 +782,15 @@ test "a mutation error is reported, and the statement did not take effect" {
     defer f.deinit();
     const alloc = testing.allocator;
 
-    // A UNIQUE constraint: inserting a duplicate id fails while SQLite
-    // executes the statement.
+    // A UNIQUE constraint: inserting a duplicate id fails while SQLite executes the statement.
     try f.db.exec(alloc, "INSERT INTO t (id, name) VALUES (99, 'first')", &.{});
 
-    // An INSERT is a mutation, so it runs through `exec`, and the
-    // binding's `exec` path logs the failure and keeps only the error
-    // name. The app surfaces that instead of reporting success.
+    // An INSERT is a mutation, so it runs through `exec`, and the binding's `exec` path logs the failure and keeps only the error name.
     var rs = try run(alloc, &f.db, "INSERT INTO t (id, name) VALUES (99, 'dup')", .{});
     defer rs.deinit();
     try testing.expect(rs.error_message != null);
 
-    // The failed insert really did not land: the table still holds the
-    // three fixture rows, not four. A tool that reported success here
-    // would corrupt data.
+    // The failed insert really did not land: the table still holds the three fixture rows, not four.
     try testing.expectEqual(@as(i64, 4), try schema.countRows(alloc, &f.db, "t"));
 }
 
@@ -922,8 +822,7 @@ test "a user LIMIT is respected, not doubled" {
 
     var rs = try run(testing.allocator, &f.db, "SELECT id FROM t LIMIT 2", .{ .limit = .{ .rows = 100 } });
     defer rs.deinit();
-    // Appending a second LIMIT would be a syntax error; the app must
-    // leave the user's own LIMIT alone.
+    // Appending a second LIMIT would be a syntax error; the app must leave the user's own LIMIT alone.
     try testing.expect(rs.error_message == null);
     try testing.expectEqual(@as(usize, 2), rs.rowCount());
 }

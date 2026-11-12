@@ -1,28 +1,9 @@
-//! SQL text utilities: statement splitting, identifier quoting, and
-//! statement classification.
-//!
-//! These exist because of a hard limitation in the underlying `databases`
-//! (ruangsql) binding: it calls `sqlite3_prepare_v2` with a `NULL` tail
-//! pointer, which means **only the first statement in a multi-statement
-//! string is ever executed and the rest are silently discarded**. A query
-//! pane that hands the user three statements and runs one of them is worse
-//! than no pane at all, so the app splits first and runs each piece itself.
-//!
-//! The splitter is a small scanner rather than a `;` split because a naive
-//! split breaks on all of the following, all of which are ordinary SQL:
-//!
-//!   - `SELECT ';' FROM t`            — semicolon inside a string literal
-//!   - `SELECT "odd;name" FROM t`     — semicolon inside a quoted identifier
-//!   - `SELECT 1 -- ; not a break`    — semicolon inside a line comment
-//!   - `SELECT /* ; */ 1`             — semicolon inside a block comment
-//!   - `CREATE TRIGGER ... BEGIN ...; ... END;`
-//!                                  — semicolons inside a trigger body
+//! SQL text utilities: statement splitting, identifier quoting, and statement classification.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-/// Scanner position class. Kept as a small enum so the main loop reads as
-/// a state machine rather than a pile of boolean flags.
+/// Scanner position class.
 const State = enum {
     /// Ordinary SQL: looking for a statement terminator.
     code,
@@ -40,9 +21,7 @@ const State = enum {
     block_comment,
 };
 
-/// A statement broken out of a script. `text` slices directly into the
-/// original script — it is not a copy, so it stays valid exactly as long
-/// as the script buffer does.
+/// A statement broken out of a script.
 pub const Statement = struct {
     /// 0-based index of this statement within the script.
     index: usize,
@@ -53,13 +32,6 @@ pub const Statement = struct {
 };
 
 /// Split a SQL script into individual statements.
-///
-/// Returns owned statement records; the `text` of each borrows from
-/// `script`. Comments are preserved (SQL ignores them), but fragments
-/// that contain nothing but whitespace and comments are dropped.
-///
-/// The caller owns the returned slice and must free it with
-/// `freeStatements`; the `text` fields must not outlive `script`.
 pub fn splitStatements(allocator: Allocator, script: []const u8) ![]Statement {
     var out: std.ArrayList(Statement) = .empty;
     errdefer out.deinit(allocator);
@@ -69,20 +41,15 @@ pub fn splitStatements(allocator: Allocator, script: []const u8) ![]Statement {
     var i: usize = 0;
 
     // A trigger body is the one place where `;` is not a terminator.
-    // We only start counting once the word `TRIGGER` has been seen, so
-    // `BEGIN`/`END` inside an ordinary transaction (which is also a SQL
-    // keyword pair) never affect splitting.
     var trigger_depth: i32 = 0;
     var in_trigger: bool = false;
-    // Start offset of the word currently being scanned, so a word can be
-    // classified at the exact moment its extent becomes known.
+    // Start offset of the word currently being scanned, so a word can be classified at the exact moment its extent becomes known.
     var word_start: ?usize = null;
 
     while (i < script.len) : (i += 1) {
         const c = script[i];
 
-        // Word bookkeeping runs first and only in code state, so a word
-        // never spans a string or comment boundary.
+        // Word bookkeeping runs first and only in code state, so a word never spans a string or comment boundary.
         if (state == .code) {
             if (isWordByte(c)) {
                 if (word_start == null) word_start = i;
@@ -110,8 +77,7 @@ pub fn splitStatements(allocator: Allocator, script: []const u8) ![]Statement {
                     },
                     else => {},
                 }
-                // A `;` is a terminator only outside strings/comments and
-                // at trigger-body depth zero.
+                // A `;` is a terminator only outside strings/comments and at trigger-body depth zero.
                 if (c == ';' and state == .code and trigger_depth <= 0) {
                     const frag = std.mem.trim(u8, script[start..i], " \t\r\n");
                     if (isMeaningful(frag)) {
@@ -162,8 +128,7 @@ pub fn splitStatements(allocator: Allocator, script: []const u8) ![]Statement {
         }
     }
 
-    // Trailing fragment without a `;`. Flush any word still open first so
-    // a script ending in `END` closes its trigger body.
+    // Trailing fragment without a `;`.
     if (word_start) |ws| classifyWord(script[ws..], &in_trigger, &trigger_depth);
     const tail = std.mem.trim(u8, script[start..], " \t\r\n");
     if (isMeaningful(tail)) {
@@ -177,15 +142,12 @@ pub fn splitStatements(allocator: Allocator, script: []const u8) ![]Statement {
     return out.toOwnedSlice(allocator);
 }
 
-/// Free the slice returned by `splitStatements`. The `text` fields are
-/// borrowed from the script, so only the record array is freed.
+/// Free the slice returned by `splitStatements`.
 pub fn freeStatements(allocator: Allocator, statements: []Statement) void {
     allocator.free(statements);
 }
 
-/// Feed one complete word to the trigger detector. Only `TRIGGER`, `BEGIN`
-/// and `END` matter, and only once a `TRIGGER` has been seen — which is
-/// what keeps a plain `BEGIN; ... COMMIT;` transaction splitting normally.
+/// Feed one complete word to the trigger detector.
 fn classifyWord(word: []const u8, in_trigger: *bool, trigger_depth: *i32) void {
     if (std.ascii.eqlIgnoreCase(word, "TRIGGER")) {
         in_trigger.* = true;
@@ -203,7 +165,6 @@ fn isWordByte(c: u8) bool {
 }
 
 /// Does this fragment contain anything other than whitespace and comments?
-/// Used to drop `;;` and trailing `; -- done` noise.
 pub fn isMeaningful(fragment: []const u8) bool {
     var i: usize = 0;
     while (i < fragment.len) {
@@ -228,11 +189,6 @@ pub fn isMeaningful(fragment: []const u8) bool {
 }
 
 /// Quote an identifier for interpolation into generated SQL.
-///
-/// The underlying binding binds every parameter as text and offers no
-/// `sqlite3_bind_identifier`, so table and column names have to be
-/// inlined. Anything interpolated this way MUST go through here, or a
-/// table named `users; DROP TABLE users` becomes two statements.
 pub fn quoteIdent(allocator: Allocator, name: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -245,9 +201,7 @@ pub fn quoteIdent(allocator: Allocator, name: []const u8) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
-/// True when `name` is a bare identifier that needs no quoting: a leading
-/// letter or underscore, then letters/digits/underscores, non-empty, and
-/// not a SQLite keyword that would change meaning if left bare.
+/// True when `name` is a bare identifier that needs no quoting: a leading letter or underscore, then letters/digits/underscores, non-empty, and not a.
 pub fn isSimpleIdent(name: []const u8) bool {
     if (name.len == 0) return false;
     if (!std.ascii.isAlphabetic(name[0]) and name[0] != '_') return false;
@@ -257,8 +211,7 @@ pub fn isSimpleIdent(name: []const u8) bool {
     return !isReservedKeyword(name);
 }
 
-/// Quote only when necessary — keeps generated SQL readable in logs and
-/// in the query pane, which matters because a DB app shows its SQL.
+/// Quote only when necessary — keeps generated SQL readable in logs and in the query pane, which matters because a DB app shows its SQL.
 pub fn quoteIfNeeded(allocator: Allocator, name: []const u8) ![]u8 {
     if (isSimpleIdent(name)) return allocator.dupe(u8, name);
     return quoteIdent(allocator, name);
@@ -282,9 +235,7 @@ pub fn isReservedKeyword(word: []const u8) bool {
     return false;
 }
 
-/// The leading keyword of a statement, uppercased. Skips leading
-/// whitespace, line comments and block comments, and any opening
-/// parens (so `(SELECT 1)` classifies as `SELECT`).
+/// The leading keyword of a statement, uppercased.
 pub fn leadingKeyword(allocator: Allocator, sql: []const u8) ![]u8 {
     var i: usize = 0;
     var scratch: std.ArrayList(u8) = .empty;
@@ -313,8 +264,7 @@ pub fn leadingKeyword(allocator: Allocator, sql: []const u8) ![]u8 {
     return scratch.toOwnedSlice(allocator);
 }
 
-/// Coarse classification of a statement, used to decide whether to run it
-/// through the row-returning path or the fire-and-forget path.
+/// Coarse classification of a statement, used to decide whether to run it through the row-returning path or the fire-and-forget path.
 pub const StatementKind = enum {
     select,
     with,
@@ -333,24 +283,17 @@ pub const StatementKind = enum {
     other,
 
     /// Does a successful run of this statement produce a result grid?
-    ///
-    /// `pragma` and `analyze` are answered per-subcommand: `PRAGMA
-    /// journal_mode` returns a row, `PRAGMA journal_mode = WAL` does not.
     pub fn returnsRows(self: StatementKind, sql: []const u8) bool {
         return switch (self) {
             .select, .explain => true,
             .pragma, .analyze => !containsAssignment(sql),
-            // A `WITH` is either a CTE-wrapped SELECT (rows) or a
-            // CTE-wrapped DML (no rows). Scanning for the first top-level
-            // data keyword after the CTE list is the pragmatic test.
+            // A `WITH` is either a CTE-wrapped SELECT (rows) or a CTE-wrapped DML (no rows).
             .with => withReturnsRows(sql),
             else => false,
         };
     }
 
-    /// Is this statement a mutation the user should be able to undo by
-    /// re-running it in a transaction? Drives the CLI's confirmation
-    /// prompt.
+    /// Is this statement a mutation the user should be able to undo by re-running it in a transaction?
     pub fn isMutation(self: StatementKind) bool {
         return switch (self) {
             .insert, .update, .delete, .drop, .alter, .replace => true,
@@ -359,8 +302,7 @@ pub const StatementKind = enum {
     }
 };
 
-/// A bare `PRAGMA foo` reads; `PRAGMA foo = bar` writes. Distinguish by
-/// looking for an `=` outside of quotes before any parenthesised argument.
+/// A bare `PRAGMA foo` reads; `PRAGMA foo = bar` writes.
 fn containsAssignment(sql: []const u8) bool {
     var state: State = .code;
     var i: usize = 0;
@@ -415,17 +357,11 @@ fn containsAssignment(sql: []const u8) bool {
     return false;
 }
 
-/// `WITH x AS (...) SELECT ...` returns rows; `WITH x AS (...) INSERT ...`
-/// does not.
-///
-/// The decision hinges on the keyword that follows the *last* CTE body, so
-/// this scans forward while tracking paren depth and ignores everything
-/// until the closing `)` of the CTE list brings the depth back to zero.
+/// `WITH x AS (...) SELECT ...` returns rows; `WITH x AS (...) INSERT ...` does not.
 fn withReturnsRows(sql: []const u8) bool {
     var depth: i32 = 0;
     var state: State = .code;
-    // Set once we have seen at least one complete `AS (...)` body. Until
-    // then, keywords belong to the CTE list, not to the real statement.
+    // Set once we have seen at least one complete `AS (...)` body.
     var seen_body = false;
     var i: usize = 0;
     while (i < sql.len) : (i += 1) {
@@ -450,9 +386,7 @@ fn withReturnsRows(sql: []const u8) bool {
                         }
                     },
                     ')', '(', ' ' => {
-                        // `)` closes a CTE body; `(` opens a nested one (any
-                        // earlier `seen_body` is then stale); whitespace is
-                        // not a decision point.
+                        // `)` closes a CTE body; `(` opens a nested one (any earlier `seen_body` is then stale); whitespace is not a decision point.
                         if (c == '(') {
                             seen_body = false;
                             depth += 1;
@@ -462,10 +396,7 @@ fn withReturnsRows(sql: []const u8) bool {
                         }
                     },
                     '\t', '\r', '\n' => {},
-                    // A comma after a completed CTE means another CTE
-                    // follows (`WITH a AS (...), b AS (...) SELECT ...`).
-                    // The next word will be that CTE's NAME, not the real
-                    // statement keyword, so keep waiting.
+                    // A comma after a completed CTE means another CTE follows (`WITH a AS (...), b AS (...) SELECT ...`).
                     ',' => {
                         seen_body = false;
                     },
@@ -534,9 +465,7 @@ fn eqlKw(a: []const u8, b: []const u8) bool {
     return std.ascii.eqlIgnoreCase(a, b);
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 const testing = std.testing;
 
