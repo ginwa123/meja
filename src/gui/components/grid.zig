@@ -40,14 +40,14 @@ pub fn gridBody(self: *App) void {
         return;
     }
 
-    // Horizontal scroll wraps the header AND the body, so a wide result scrolls as one table instead of a header that stays put over rows that move.
+    gridHeader(self);
     scroll_mod.scroll(.{
-        .id = "grid.hscroll",
-        .direction = .horizontal,
+        .id = "grid.scroll",
+        .direction = .both,
         .w = .grow,
         .h = .grow,
         .show_scrollbar = true,
-    }, self, gridColumns);
+    }, self, gridRows);
 
     maybeLoadMore(self);
 }
@@ -90,7 +90,11 @@ pub fn maybeLoadMore(self: *App) void {
     if (content <= view) return;
     // Clay's scroll position is negative going down.
     const scrolled = -data.scroll_position.y;
-    if (scrolled + view >= content - 40) self.loadMore();
+    if (scrolled + view < content - 40) return;
+    // One load per bottom: without this the viewport stays "near the bottom" after the content grows, so every frame re-ran the query and the table flickered.
+    if (scrolled <= self.last_load_scroll + 1) return;
+    self.last_load_scroll = scrolled;
+    self.loadMore();
 }
 
 pub fn gridEmptyChildren(self: *App) void {
@@ -129,7 +133,21 @@ pub fn gridHeaderChildren(self: *App) void {
         .pad = 4,
     }, self, headerNumChildren);
 
-    var c: usize = 0;
+    // The header is outside the scroll container, so it follows the body's horizontal offset by hand.
+    const data = ui.zclay.getScrollContainerData(ui.zclay.getElementId("grid.scroll"));
+    const sx: f32 = if (data.found) @max(-data.scroll_position.x, 0) else 0;
+
+    var x: f32 = 0;
+    var first: usize = 0;
+    while (first < self.col_widths.items.len) : (first += 1) {
+        const w: f32 = @floatFromInt(self.col_widths.items[first]);
+        if (x + w > sx) break;
+        x += w;
+    }
+    const lead = x - sx;
+    if (lead > 0) padBox(self, "grid.head.pad", lead);
+
+    var c: usize = first;
     while (c < self.col_widths.items.len) : (c += 1) {
         headerCell(self, c);
     }
