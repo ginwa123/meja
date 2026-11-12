@@ -46,10 +46,17 @@ pub fn gridBody(self: *App) void {
         .direction = .both,
         .w = .grow,
         .h = .grow,
+        .max_w = viewportWidth(self),
         .show_scrollbar = true,
     }, self, gridRows);
 
     maybeLoadMore(self);
+}
+
+/// The width the grid may occupy: the window minus the sidebar.
+fn viewportWidth(self: *App) f32 {
+    const w = @as(f32, @floatFromInt(self.window_w)) - theme.sidebar_width;
+    return @max(w, 200);
 }
 
 /// The full table width: the row-number gutter plus every column.
@@ -116,6 +123,7 @@ pub fn gridHeader(self: *App) void {
         .id = "grid.header",
         .w = .grow,
         .h = .{ .fixed = @floatFromInt(theme.row_height) },
+        .max_w = viewportWidth(self),
         .direction = .row,
         .bg = theme.bg_header,
         .gap = 0,
@@ -258,7 +266,7 @@ pub fn gridRow(self: *App, display_index: usize) void {
 
     box_mod.box(.{
         .id = id,
-        .w = .grow,
+        .w = .{ .fixed = totalWidth(self) },
         .h = .{ .fixed = @floatFromInt(theme.row_height) },
         .direction = .row,
         .bg = if (display_index % 2 == 0) theme.bg_row_even else theme.bg_row_odd,
