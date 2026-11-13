@@ -699,8 +699,9 @@ test "the caret is a box at the caret column, not a glyph inside the text" {
 
     const line = h.driver.box("editor.line.0") orelse return error.ElementNotFound;
     const caret = h.driver.box("editor.caret.0") orelse return error.ElementNotFound;
-    // Three columns in, and a bar rather than a character cell.
-    try testing.expectApproxEqAbs(line.x + 3 * theme.mono_char_w, caret.x, 0.5);
+    // Three columns in, at the width the font actually gives those three characters.
+    const three = ui.text.measureText("SEL", theme.font_size).w;
+    try testing.expectApproxEqAbs(line.x + three, caret.x, 0.5);
     try testing.expectEqual(@as(f32, 1), caret.width);
     try testing.expect(caret.height > @as(f32, @floatFromInt(theme.font_size)));
     // The line is drawn verbatim, so nothing was inserted into it.
@@ -710,8 +711,94 @@ test "the caret is a box at the caret column, not a glyph inside the text" {
     h.app.ed.setCaret(6, false);
     h.driver.frame();
     const moved = h.driver.box("editor.caret.0") orelse return error.ElementNotFound;
-    try testing.expectApproxEqAbs(line.x + 6 * theme.mono_char_w, moved.x, 0.5);
+    try testing.expectApproxEqAbs(line.x + ui.text.measureText("SELECT", theme.font_size).w, moved.x, 0.5);
     try h.driver.expectText("SELECT 1");
+}
+
+// ---- Double click ----
+
+var fake_now_ms: i64 = 0;
+
+fn fakeClock(_: ?*anyopaque) i64 {
+    return fake_now_ms;
+}
+
+test "double-clicking a word in the editor selects it" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    h.installKeys();
+    h.driver.host.clock = fakeClock;
+    _ = h.app.ed.insertSlice("SELECT name");
+    h.app.ed.setCaret(11, false);
+    h.driver.frame();
+
+    const line = h.driver.box("editor.line.0") orelse return error.ElementNotFound;
+    const y = line.y + line.height * 0.5;
+    // Inside the first word.
+    const x = line.x + ui.text.measureText("SEL", theme.font_size).w;
+
+    fake_now_ms = 1000;
+    h.driver.clickAt(x, y);
+    fake_now_ms = 1150;
+    h.driver.clickAt(x, y);
+
+    const span = h.app.ed.caret.selection() orelse return error.NoSelection;
+    try testing.expectEqual(@as(usize, 0), span.start);
+    try testing.expectEqual(@as(usize, 6), span.end);
+    // Selecting never edits the buffer.
+    try testing.expectEqualStrings("SELECT name", h.app.ed.text());
+}
+
+test "two slow clicks in the editor leave a caret, not a selection" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    h.installKeys();
+    h.driver.host.clock = fakeClock;
+    _ = h.app.ed.insertSlice("SELECT name");
+    h.app.ed.setCaret(11, false);
+    h.driver.frame();
+
+    const line = h.driver.box("editor.line.0") orelse return error.ElementNotFound;
+    const y = line.y + line.height * 0.5;
+    const x = line.x + ui.text.measureText("SEL", theme.font_size).w;
+
+    fake_now_ms = 1000;
+    h.driver.clickAt(x, y);
+    fake_now_ms = 2000;
+    h.driver.clickAt(x, y);
+
+    try testing.expect(h.app.ed.caret.selection() == null);
+    try testing.expectEqual(@as(usize, 3), h.app.ed.caret.offset);
+}
+
+test "double-clicking a word in a field selects it" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    h.installKeys();
+    h.driver.host.clock = fakeClock;
+    h.app.focus = .tree_search;
+    _ = h.app.onText("users");
+    h.driver.frame();
+
+    const bb = h.driver.box("sidebar.search") orelse return error.ElementNotFound;
+    const y = bb.y + bb.height * 0.5;
+    const x = bb.x + 9 + 1;
+
+    fake_now_ms = 1000;
+    h.driver.clickAt(x, y);
+    fake_now_ms = 1100;
+    h.driver.clickAt(x, y);
+
+    const span = h.app.tree_search_ed.caret.selection() orelse return error.NoSelection;
+    try testing.expectEqual(@as(usize, 0), span.start);
+    try testing.expectEqual(@as(usize, 5), span.end);
+    try testing.expectEqualStrings("users", h.app.tree_search_ed.text());
 }
 
 // ---- Clipboard ----

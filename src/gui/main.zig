@@ -171,6 +171,9 @@ pub fn main(init: std.process.Init) !void {
     var host = try ui.host.Host.init(gpa, &app, App_root_wrapper);
     defer host.deinit();
     host.keys.register(App_key_wrapper, &app);
+    // A real millisecond clock, so the toolkit can tell a double click from two clicks.
+    host.clock = App_now_ms;
+    host.clock_ctx = &app;
     // Typing arrives as composed text (Caps Lock, Shift and the keyboard layout already applied), not as keycodes.
     host.keys.registerText(App_text_wrapper, &app);
 
@@ -195,6 +198,12 @@ fn App_key_wrapper(ctx: ?*anyopaque, mods: input_mod.Mods, keycode: u32) bool {
     const self: *App = @ptrCast(@alignCast(ctx.?));
     _ = self.onKey(mods, keycode);
     return ui.keyToClose(keycode);
+}
+
+/// Milliseconds from the app's monotonic clock.
+fn App_now_ms(ctx: ?*anyopaque) i64 {
+    const self: *App = @ptrCast(@alignCast(ctx.?));
+    return std.Io.Clock.awake.now(self.io).toMilliseconds();
 }
 
 /// Adapter between the platform's composed text and the app's focus routing.

@@ -95,7 +95,7 @@ pub fn editorBodyChildren(self: *App) void {
             .direction = .row,
             .child_align = .{ .y = .center },
         }, &self.line_clicks[line], editorLineChildren);
-        registry.registerClickCursor(cl.getElementId(id), onLineClick, &self.line_clicks[line], .text);
+        registry.registerClickDoubleCursor(cl.getElementId(id), onLineClick, onLineDoubleClick, &self.line_clicks[line], .text);
     }
 }
 
@@ -106,19 +106,34 @@ fn editorLineChildren(lc: *LineClick) void {
     editorLine(self, lc.line, lc.line == caret_line and self.focus == .sql_editor);
 }
 
-/// Place the caret from a click on a line: the column comes from x, the line is the one that was hit.
-fn onLineClick(ctx: ?*anyopaque) void {
-    const lc: *LineClick = @ptrCast(@alignCast(ctx.?));
-    const self = lc.app;
-    const start = self.ed.lineStartAt(lc.line);
+/// The byte offset in the clicked line that the pointer is over, or null when the line box is not laid out.
+fn lineOffsetAtPointer(self: *App, line: usize) ?usize {
+    const start = self.ed.lineStartAt(line);
     var end = start;
     while (end < self.ed.len and self.ed.buf[end] != '\n') end += 1;
     // The body is the box every line shares, and its padding is where the text starts.
     const body = cl.getElementData(cl.getElementId("editor.body"));
-    if (!body.found) return;
+    if (!body.found) return null;
     const rel_x = @max(ui.frame.ptr_x - body.bounding_box.x - 6, 0);
-    self.ed.setCaret(@min(start + self.ed.caretAtX(rel_x, theme.mono_char_w), end), false);
+    return start + offsetAtX(self.ed.buf[start..end], rel_x);
+}
+
+/// Place the caret from a click on a line: the column comes from x, the line is the one that was hit.
+fn onLineClick(ctx: ?*anyopaque) void {
+    const lc: *LineClick = @ptrCast(@alignCast(ctx.?));
+    const self = lc.app;
+    const at = lineOffsetAtPointer(self, lc.line) orelse return;
+    self.ed.setCaret(at, false);
     self.ed.idle = 0;
+    self.focus = .sql_editor;
+}
+
+/// Double click: select the word under the pointer, the way every text field does.
+fn onLineDoubleClick(ctx: ?*anyopaque) void {
+    const lc: *LineClick = @ptrCast(@alignCast(ctx.?));
+    const self = lc.app;
+    const at = lineOffsetAtPointer(self, lc.line) orelse return;
+    editor.selectWordAt(&self.ed, at);
     self.focus = .sql_editor;
 }
 
@@ -160,20 +175,45 @@ pub fn editorLine(self: *App, line: usize, has_caret: bool) void {
         .font_size = theme.font_size,
         .color = theme.text,
     });
-    if (caret_at) |at| caretBar(self, line, at, text.len);
+    if (caret_at) |at| caretBar(self, line, at, text);
+}
+
+/// The x of byte `at` in `text`, measured with the font that draws the line — not a guessed cell width.
+fn columnX(text: []const u8, at: usize) f32 {
+    return ui.text.measureText(text[0..@min(at, text.len)], theme.font_size).w;
+}
+
+/// The byte offset in `text` closest to `x`, measured the same way the line is drawn.
+fn offsetAtX(text: []const u8, x: f32) usize {
+    if (text.len == 0 or x <= 0) return 0;
+    var lo: usize = 0;
+    var hi: usize = text.len;
+    // Largest offset whose prefix still ends left of x.
+    while (lo < hi) {
+        const mid = (lo + hi + 1) / 2;
+        if (columnX(text, mid) <= x) lo = mid else hi = mid - 1;
+    }
+    // Never leave the caret inside a codepoint.
+    while (lo > 0 and lo < text.len and (text[lo] & 0xC0) == 0x80) lo -= 1;
+    // The nearer edge wins, which is what makes a click between two letters feel right.
+    if (lo < text.len) {
+        const step = editor.codepointLen(text, lo);
+        if (x - columnX(text, lo) > columnX(text, lo + step) - x) return lo + step;
+    }
+    return lo;
 }
 
 /// The caret: a 1px bar floated over the line at the caret's column.
 ///
 /// It is NOT a `|` inserted into the text. A glyph takes a character cell, so the tail of the line shifted every time
 /// the caret blinked, and it sat on the baseline like a letter instead of standing between two of them.
-fn caretBar(self: *App, line: usize, at: usize, line_len: usize) void {
-    const col = @as(f32, @floatFromInt(@min(at, line_len))) * theme.mono_char_w;
+fn caretBar(self: *App, line: usize, at: usize, text: []const u8) void {
     cl.UI()(.{
         .id = .ID(self.cellId("editor.caret", line)),
         .layout = .{ .sizing = .{ .w = .fixed(1), .h = .fixed(@floatFromInt(theme.font_size + 4)) } },
         .floating = .{
-            .offset = .{ .x = col, .y = 1 },
+            // The font's own advance for the run before the caret: a fixed cell width drifts and overlaps the glyph.
+            .offset = .{ .x = columnX(text, at), .y = 1 },
             .attach_to = .to_parent,
             .attach_points = .{ .element = .left_top, .parent = .left_top },
             .z_index = 2,
