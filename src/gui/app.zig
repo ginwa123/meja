@@ -855,6 +855,8 @@ pub const App = struct {
     pub fn loadMore(self: *App) void {
         if (!self.has_result or !self.result.truncated) return;
         if (self.pending_load) return;
+        // Only when everything already asked for has arrived. A trackpad moves the scroll position every frame, so without this the grid sat at the bottom and re-ran the query on every one of them.
+        if (self.row_order.items.len < self.loaded_rows) return;
         self.loaded_rows += 200;
         self.pending_load = true;
     }
