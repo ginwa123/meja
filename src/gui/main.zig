@@ -171,6 +171,8 @@ pub fn main(init: std.process.Init) !void {
     var host = try ui.host.Host.init(gpa, &app, App_root_wrapper);
     defer host.deinit();
     host.keys.register(App_key_wrapper, &app);
+    // Typing arrives as composed text (Caps Lock, Shift and the keyboard layout already applied), not as keycodes.
+    host.keys.registerText(App_text_wrapper, &app);
 
     var window = ui.Window.init(gpa, .{
         .app_id = "meja",
@@ -193,6 +195,12 @@ fn App_key_wrapper(ctx: ?*anyopaque, mods: input_mod.Mods, keycode: u32) bool {
     const self: *App = @ptrCast(@alignCast(ctx.?));
     _ = self.onKey(mods, keycode);
     return ui.keyToClose(keycode);
+}
+
+/// Adapter between the platform's composed text and the app's focus routing.
+fn App_text_wrapper(ctx: ?*anyopaque, text: []const u8) bool {
+    const self: *App = @ptrCast(@alignCast(ctx.?));
+    return self.onText(text);
 }
 
 test {

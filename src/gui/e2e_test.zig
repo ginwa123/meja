@@ -591,6 +591,35 @@ test "typing reaches the editor through the real keychain" {
     try h.expectEditorDrawn(0);
 }
 
+test "composed text types Caps Lock, symbols and accents, and follows the focus" {
+    // macOS hands over what AppKit composed, so a caps `S`, Shift+8 and a dead-key `e-acute` must land verbatim in whichever field has the keyboard.
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    h.installKeys();
+    h.driver.host.keys.registerText(struct {
+        fn f(ctx: ?*anyopaque, text: []const u8) bool {
+            const a: *App = @ptrCast(@alignCast(ctx.?));
+            return a.onText(text);
+        }
+    }.f, h.app);
+
+    try testing.expect(h.driver.host.onTextEvent("S"));
+    try testing.expect(h.driver.host.onTextEvent("ELECT * ("));
+    try testing.expect(h.driver.host.onTextEvent("\xc3\xa9"));
+    try testing.expectEqualStrings("SELECT * (\xc3\xa9", h.app.ed.text());
+
+    // The tree-search field is a different editor, so the routing has to follow the focus.
+    h.app.focus = .tree_search;
+    try testing.expect(h.driver.host.onTextEvent("A"));
+    try testing.expectEqualStrings("A", h.app.tree_search_ed.text());
+    try testing.expectEqualStrings("SELECT * (\xc3\xa9", h.app.ed.text());
+
+    // An empty run is not a keystroke: nothing to insert, nothing consumed.
+    try testing.expect(!h.driver.host.onTextEvent(""));
+}
+
 // Choosing a database
 
 /// A directory under the build cache with real database files in it.

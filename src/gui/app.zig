@@ -983,6 +983,42 @@ pub const App = struct {
         return self.onEditorKey(mods, keycode);
     }
 
+    /// Composed text from the platform: `A` under Caps Lock, `*`, `(`, `\xc3\xa9`. Routed to whichever field owns the keyboard.
+    pub fn onText(self: *App, text: []const u8) bool {
+        if (text.len == 0) return false;
+        switch (self.focus) {
+            .tree_search => return self.onFieldText(&self.tree_search_ed, text, .tree),
+            .row_filter => return self.onFieldText(&self.filter_ed, text, .filter),
+            .palette => return self.onFieldText(&self.palette_ed, text, .palette),
+            .path => return switch (editor.handleText(&self.picker.field, text)) {
+                .edited, .run_requested => true,
+                .ignored => false,
+            },
+            .sql_editor => return switch (editor.handleText(&self.ed, text)) {
+                .edited, .run_requested => true,
+                .ignored => false,
+            },
+        }
+    }
+
+    /// Text for one of the small fields, mirroring `onFieldKey` so the app's copies stay in sync.
+    fn onFieldText(self: *App, ed: *text_editor.Editor, text: []const u8, which: Field) bool {
+        switch (text_editor.handleText(ed, text)) {
+            .edited => {
+                switch (which) {
+                    .tree => self.tree_search = ed.text(),
+                    .filter => self.syncFilter(),
+                    .palette => {
+                        self.palette = ed.text();
+                        self.palette_idx = 0;
+                    },
+                }
+                return true;
+            },
+            .run_requested, .ignored => return false,
+        }
+    }
+
     fn focusTreeSearch(ctx: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(ctx.?));
         self.focus = .tree_search;
