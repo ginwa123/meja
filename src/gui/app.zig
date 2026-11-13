@@ -139,13 +139,9 @@ pub const App = struct {
     window_w: u32 = 0,
     window_h: u32 = 0,
 
-    /// Reset the text arena and advance the caret blink.
+    /// Reset the frame-scoped text arena. The fields tick their own caret blink when they draw.
     pub fn beginFrame(self: *App) void {
         self.text_used = 0;
-        // The blink is driven by the frame clock, so a caret is solid right after an edit and blinks when the field is idle.
-        self.tree_search_ed.idle += 0.016;
-        self.filter_ed.idle += 0.016;
-        self.palette_ed.idle += 0.016;
     }
 
     /// Claim `n` bytes of frame-scoped scratch.
