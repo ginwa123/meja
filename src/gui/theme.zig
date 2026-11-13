@@ -45,6 +45,9 @@ pub const font_size: u16 = 14;
 pub const font_size_small: u16 = 13;
 pub const font_size_tiny: u16 = 11;
 
+/// Advance width of one monospace glyph at `font_size`, which is what turns a click's x into a column.
+pub const mono_char_w: f32 = 8.4;
+
 /// One grid row, header included.
 pub const row_height: u16 = 22;
 

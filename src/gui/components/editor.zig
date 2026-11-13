@@ -10,7 +10,10 @@ const tree_mod = ui.components.tree;
 const tabs_mod = ui.components.tabs;
 const badge_mod = ui.components.badge;
 
+const cl = ui.zclay;
 const app_mod = @import("../app.zig");
+const LineClick = app_mod.LineClick;
+const max_editor_lines = app_mod.max_editor_lines;
 const App = app_mod.App;
 const theme = @import("../theme.zig");
 const grid = ui.table;
@@ -80,10 +83,41 @@ pub fn editorBody(self: *App) void {
 
 pub fn editorBodyChildren(self: *App) void {
     const line_count = @max(self.ed.lineCount(), 1);
-    const caret_line = self.ed.lineNumber(self.ed.caret.offset);
-    for (0..line_count) |line| {
-        editorLine(self, line, line == caret_line);
+    for (0..@min(line_count, max_editor_lines)) |line| {
+        const id = self.cellId("editor.line", line);
+        self.line_clicks[line] = .{ .app = self, .line = line };
+        box_mod.box(.{
+            .id = id,
+            .w = .grow,
+            .h = .{ .fixed = theme.row_height },
+            .direction = .row,
+            .child_align = .{ .y = .center },
+        }, &self.line_clicks[line], editorLineChildren);
+        registry.registerClickCursor(cl.getElementId(id), onLineClick, &self.line_clicks[line], .text);
     }
+}
+
+/// Draw one editor line inside the box that owns its click target.
+fn editorLineChildren(lc: *LineClick) void {
+    const self = lc.app;
+    const caret_line = self.ed.lineNumber(self.ed.caret.offset);
+    editorLine(self, lc.line, lc.line == caret_line);
+}
+
+/// Place the caret from a click on a line: the column comes from x, the line is the one that was hit.
+fn onLineClick(ctx: ?*anyopaque) void {
+    const lc: *LineClick = @ptrCast(@alignCast(ctx.?));
+    const self = lc.app;
+    const start = self.ed.lineStartAt(lc.line);
+    var end = start;
+    while (end < self.ed.len and self.ed.buf[end] != '\n') end += 1;
+    // The body is the box every line shares, and its padding is where the text starts.
+    const body = cl.getElementData(cl.getElementId("editor.body"));
+    if (!body.found) return;
+    const rel_x = @max(ui.frame.ptr_x - body.bounding_box.x - 6, 0);
+    self.ed.setCaret(@min(start + self.ed.caretAtX(rel_x, theme.mono_char_w), end), false);
+    self.ed.idle = 0;
+    self.focus = .sql_editor;
 }
 
 /// Longest editor line drawn in one piece.

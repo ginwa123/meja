@@ -620,6 +620,134 @@ test "composed text types Caps Lock, symbols and accents, and follows the focus"
     try testing.expect(!h.driver.host.onTextEvent(""));
 }
 
+test "dragging across a field selects the run under the pointer" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    h.installKeys();
+    h.app.focus = .tree_search;
+    _ = h.app.onText("users");
+    h.frame();
+
+    const bb = h.driver.box("sidebar.search") orelse return error.ElementNotFound;
+    const y = bb.y + bb.height * 0.5;
+    // Press just inside the left edge (the field pads by 8), then drag three characters right.
+    h.driver.pressAt(bb.x + 9, y);
+    h.driver.move(bb.x + 9 + 3 * 7.8, y);
+    h.driver.releaseAt(bb.x + 9 + 3 * 7.8, y);
+
+    const span = h.app.tree_search_ed.caret.selection() orelse return error.NoSelection;
+    try testing.expect(span.start == 0);
+    try testing.expectEqual(@as(usize, 3), span.end);
+    // Selecting never edits the field.
+    try testing.expectEqualStrings("users", h.app.tree_search_ed.text());
+}
+
+test "clicking a line in the SQL editor puts the caret on that line" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    h.installKeys();
+    _ = h.app.ed.insertSlice("SELECT 1\nFROM t");
+    h.app.focus = .tree_search;
+    h.frame();
+
+    const bb = h.driver.box("editor.line.1") orelse return error.ElementNotFound;
+    // Two characters into `FROM t`, which starts at byte 9.
+    h.driver.clickAt(bb.x + 2 * 8.4, bb.y + bb.height * 0.5);
+    try testing.expectEqual(@as(usize, 11), h.app.ed.caret.offset);
+    try testing.expectEqual(app_mod.Focus.sql_editor, h.app.focus);
+    try testing.expectEqualStrings("SELECT 1\nFROM t", h.app.ed.text());
+}
+
+// ---- Clipboard ----
+
+var fake_clipboard: [4096]u8 = undefined;
+var fake_clipboard_len: usize = 0;
+
+fn fakeClipboardWrite(text: []const u8) void {
+    const n = @min(text.len, fake_clipboard.len);
+    @memcpy(fake_clipboard[0..n], text[0..n]);
+    fake_clipboard_len = n;
+}
+
+fn fakeClipboardRead(buf: []u8) []const u8 {
+    const n = @min(fake_clipboard_len, buf.len);
+    @memcpy(buf[0..n], fake_clipboard[0..n]);
+    return buf[0..n];
+}
+
+fn fakeClipboardText() []const u8 {
+    return fake_clipboard[0..fake_clipboard_len];
+}
+
+test "Cmd+C, Cmd+X and Cmd+V move text through the clipboard" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    h.installKeys();
+    h.app.clipboard = .{ .read = fakeClipboardRead, .write = fakeClipboardWrite };
+    fake_clipboard_len = 0;
+
+    try h.typeText("SELECT name");
+    // Select `name`: the caret goes to the end, then the anchor back to byte 7.
+    h.app.ed.setCaret(11, false);
+    h.app.ed.setCaret(7, true);
+
+    try testing.expect(h.app.onKey(.{ .super = true }, editor.KEY_C));
+    try testing.expectEqualStrings("name", fakeClipboardText());
+    // Copying must not disturb the buffer.
+    try testing.expectEqualStrings("SELECT name", h.app.ed.text());
+
+    // Collapse the selection to the end and paste: the copied run lands after the text.
+    _ = h.app.onKey(.{}, editor.KEY_RIGHT);
+    try testing.expect(h.app.onKey(.{ .super = true }, editor.KEY_V));
+    try testing.expectEqualStrings("SELECT namename", h.app.ed.text());
+
+    // Cmd+A selects everything, Cmd+X takes it away and puts it on the clipboard.
+    try testing.expect(h.app.onKey(.{ .super = true }, editor.KEY_A));
+    try testing.expect(h.app.onKey(.{ .super = true }, editor.KEY_X));
+    try testing.expectEqualStrings("", h.app.ed.text());
+    try testing.expectEqualStrings("SELECT namename", fakeClipboardText());
+
+    try testing.expect(h.app.onKey(.{ .super = true }, editor.KEY_V));
+    try testing.expectEqualStrings("SELECT namename", h.app.ed.text());
+
+    // With nothing selected, copy is not consumed -- and it must never type a literal `c`.
+    h.app.ed.setCaret(0, false);
+    try testing.expect(!h.app.onKey(.{ .super = true }, editor.KEY_C));
+    try testing.expectEqualStrings("SELECT namename", h.app.ed.text());
+}
+
+test "Cmd+C on the tree search copies that field, not the SQL editor" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    h.installKeys();
+    h.app.clipboard = .{ .read = fakeClipboardRead, .write = fakeClipboardWrite };
+    fake_clipboard_len = 0;
+
+    try h.typeText("SELECT 1");
+    h.app.focus = .tree_search;
+    _ = h.app.onText("users");
+    h.app.tree_search_ed.setCaret(5, false);
+    h.app.tree_search_ed.setCaret(0, true);
+
+    try testing.expect(h.app.onKey(.{ .super = true }, editor.KEY_C));
+    try testing.expectEqualStrings("users", fakeClipboardText());
+
+    // Paste goes to the same field, and the SQL editor is untouched.
+    _ = h.app.onKey(.{}, editor.KEY_END);
+    try testing.expect(h.app.onKey(.{ .super = true }, editor.KEY_V));
+    try testing.expectEqualStrings("usersusers", h.app.tree_search_ed.text());
+    try testing.expectEqualStrings("usersusers", h.app.tree_search);
+    try testing.expectEqualStrings("SELECT 1", h.app.ed.text());
+}
+
 // Choosing a database
 
 /// A directory under the build cache with real database files in it.

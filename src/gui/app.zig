@@ -19,6 +19,30 @@ const picker_mod = @import("components/picker.zig");
 const dialog = @import("components/dialog.zig");
 const theme = @import("theme.zig");
 
+/// Largest clipboard run this app will move: a SQL editor buffer, not a document.
+const clipboard_max: usize = 64 * 1024;
+
+/// Deepest editor line that gets its own click target.
+pub const max_editor_lines: usize = 512;
+
+/// One click target per editor line, so a click lands on the line it hit instead of a y computed from a guessed pitch.
+pub const LineClick = struct {
+    app: *App,
+    line: usize,
+};
+
+/// Where the clipboard lives: the platform port in the app, a fake in a test, so copy and paste are testable headlessly.
+pub const Clipboard = struct {
+    read: *const fn (buf: []u8) []const u8,
+    write: *const fn (text: []const u8) void,
+};
+
+/// The real one: `ui.clipboard`, which is the pasteboard on macOS and a no-op elsewhere.
+pub const platform_clipboard: Clipboard = .{
+    .read = glin.clipboard.read,
+    .write = glin.clipboard.write,
+};
+
 /// Which text field owns the keyboard.
 pub const Focus = enum { sql_editor, path, tree_search, row_filter, palette };
 
@@ -90,6 +114,10 @@ pub const App = struct {
     // Database selection.
     picker: picker_mod.Picker = undefined,
     focus: Focus = .sql_editor,
+    /// Swapped for a fake by the e2e harness, so Cmd+C/V can be asserted without a real pasteboard.
+    clipboard: Clipboard = platform_clipboard,
+    /// Stable per-line click contexts; the registry keeps the pointer until the release fires.
+    line_clicks: [max_editor_lines]LineClick = undefined,
 
     // Live field contexts, one per field, so a click can find its model.
     tree_search_ctx: input_mod.FieldCtx = undefined,
@@ -950,11 +978,20 @@ pub const App = struct {
 
     /// Route one key event.
     pub fn onKey(self: *App, mods: input_mod.Mods, keycode: u32) bool {
-        if (mods.ctrl and keycode == editor.KEY_O) {
+        // Cmd on macOS, Ctrl everywhere else: the clipboard is one gesture on both.
+        if (mods.shortcut()) {
+            switch (keycode) {
+                editor.KEY_C => return self.copyFocused(),
+                editor.KEY_X => return self.cutFocused(),
+                editor.KEY_V => return self.pasteFocused(),
+                else => {},
+            }
+        }
+        if (mods.shortcut() and keycode == editor.KEY_O) {
             if (self.picker.open) self.closePicker() else self.openPicker();
             return true;
         }
-        if (mods.ctrl and keycode == editor.KEY_K) {
+        if (mods.shortcut() and keycode == editor.KEY_K) {
             if (self.palette_open) self.closePalette() else self.openPalette();
             return true;
         }
@@ -1019,6 +1056,57 @@ pub const App = struct {
         }
     }
 
+    /// The editor the keyboard is currently typing into.
+    fn focusedEditor(self: *App) *text_editor.Editor {
+        return switch (self.focus) {
+            .tree_search => &self.tree_search_ed,
+            .row_filter => &self.filter_ed,
+            .palette => &self.palette_ed,
+            .path => &self.picker.field,
+            .sql_editor => &self.ed,
+        };
+    }
+
+    /// Copy the focused field's selection to the system clipboard; false when nothing is selected.
+    fn copyFocused(self: *App) bool {
+        var buf: [clipboard_max]u8 = undefined;
+        const copied = text_editor.copySelection(self.focusedEditor(), &buf) orelse return false;
+        self.clipboard.write(copied);
+        return true;
+    }
+
+    /// Cut: copy, then remove the selection; false when nothing is selected.
+    fn cutFocused(self: *App) bool {
+        var buf: [clipboard_max]u8 = undefined;
+        const copied = text_editor.cutSelection(self.focusedEditor(), &buf) orelse return false;
+        self.clipboard.write(copied);
+        self.syncFocused();
+        return true;
+    }
+
+    /// Paste the clipboard into the focused field, replacing its selection; false when the clipboard holds no text.
+    fn pasteFocused(self: *App) bool {
+        var buf: [clipboard_max]u8 = undefined;
+        const run = self.clipboard.read(&buf);
+        if (run.len == 0) return false;
+        if (text_editor.paste(self.focusedEditor(), run) != .edited) return false;
+        self.syncFocused();
+        return true;
+    }
+
+    /// Mirror the focused field back into the app's own copies after an edit that did not go through `onFieldKey`.
+    fn syncFocused(self: *App) void {
+        switch (self.focus) {
+            .tree_search => self.tree_search = self.tree_search_ed.text(),
+            .row_filter => self.syncFilter(),
+            .palette => {
+                self.palette = self.palette_ed.text();
+                self.palette_idx = 0;
+            },
+            .path, .sql_editor => {},
+        }
+    }
+
     fn focusTreeSearch(ctx: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(ctx.?));
         self.focus = .tree_search;
@@ -1039,7 +1127,7 @@ pub const App = struct {
 
     /// Keys for one of the small text fields. The editor's own handler does the work, so typing, Backspace, Home/End and shift-selection behave exactly as they do in the SQL editor.
     fn onFieldKey(self: *App, ed: *text_editor.Editor, keycode: u32, mods: input_mod.Mods, which: Field) bool {
-        switch (text_editor.handleKey(ed, keycode, mods.shift, mods.ctrl)) {
+        switch (text_editor.handleKey(ed, keycode, mods.shift, mods.shortcut())) {
             .edited => {
                 ed.idle = 0;
                 switch (which) {
@@ -1061,7 +1149,7 @@ pub const App = struct {
     }
 
     fn onEditorKey(self: *App, mods: input_mod.Mods, keycode: u32) bool {
-        switch (editor.handleKey(&self.ed, keycode, mods.shift, mods.ctrl)) {
+        switch (editor.handleKey(&self.ed, keycode, mods.shift, mods.shortcut())) {
             .run_requested => {
                 self.runEditor();
                 return true;
@@ -1093,7 +1181,7 @@ pub const App = struct {
             else => {},
         }
         // Everything else — typing, Backspace, Home/End, selection — is exactly what the SQL editor does, so it is literally the same handler and the same.
-        return switch (editor.handleKey(&self.picker.field, keycode, mods.shift, mods.ctrl)) {
+        return switch (editor.handleKey(&self.picker.field, keycode, mods.shift, mods.shortcut())) {
             .run_requested, .edited => true,
             .ignored => false,
         };
