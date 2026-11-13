@@ -70,6 +70,8 @@ pub fn editorBarChildren(self: *App) void {
 }
 
 pub fn editorBody(self: *App) void {
+    // The editor owns its caret clock, the same way a single-line field does; without this tick it could never blink.
+    self.ed.idle += ui.frame.delta_s;
     box_mod.box(.{
         .id = "editor.body",
         .w = .grow,
@@ -101,7 +103,7 @@ pub fn editorBodyChildren(self: *App) void {
 fn editorLineChildren(lc: *LineClick) void {
     const self = lc.app;
     const caret_line = self.ed.lineNumber(self.ed.caret.offset);
-    editorLine(self, lc.line, lc.line == caret_line);
+    editorLine(self, lc.line, lc.line == caret_line and self.focus == .sql_editor);
 }
 
 /// Place the caret from a click on a line: the column comes from x, the line is the one that was hit.
@@ -119,9 +121,6 @@ fn onLineClick(ctx: ?*anyopaque) void {
     self.ed.idle = 0;
     self.focus = .sql_editor;
 }
-
-/// Longest editor line drawn in one piece.
-const max_line_bytes: usize = 1024;
 
 pub fn editorLine(self: *App, line: usize, has_caret: bool) void {
     const start = self.ed.lineStartAt(line);
@@ -156,16 +155,32 @@ pub fn editorLine(self: *App, line: usize, has_caret: bool) void {
         }
     }
 
-    // NOT a local buffer: the draw command keeps this pointer until the rasteriser runs.
-    const cap = @min(text.len + 1, max_line_bytes);
-    const buf = self.claimText(cap);
-    const shown = editor.renderLineWithCaret(text, caret_at, buf);
-
     text_mod.label(.{
-        .str = shown,
+        .str = text,
         .font_size = theme.font_size,
         .color = theme.text,
     });
+    if (caret_at) |at| caretBar(self, line, at, text.len);
+}
+
+/// The caret: a 1px bar floated over the line at the caret's column.
+///
+/// It is NOT a `|` inserted into the text. A glyph takes a character cell, so the tail of the line shifted every time
+/// the caret blinked, and it sat on the baseline like a letter instead of standing between two of them.
+fn caretBar(self: *App, line: usize, at: usize, line_len: usize) void {
+    const col = @as(f32, @floatFromInt(@min(at, line_len))) * theme.mono_char_w;
+    cl.UI()(.{
+        .id = .ID(self.cellId("editor.caret", line)),
+        .layout = .{ .sizing = .{ .w = .fixed(1), .h = .fixed(@floatFromInt(theme.font_size + 4)) } },
+        .floating = .{
+            .offset = .{ .x = col, .y = 1 },
+            .attach_to = .to_parent,
+            .attach_points = .{ .element = .left_top, .parent = .left_top },
+            .z_index = 2,
+        },
+        // Hidden by going transparent, never by leaving it out: a missing box would reflow the line on every blink.
+        .background_color = if (editor.caretVisible(&self.ed)) theme.text_bright.toClay() else .{ 0, 0, 0, 0 },
+    })({});
 }
 
 fn noChildren(_: *App) void {}

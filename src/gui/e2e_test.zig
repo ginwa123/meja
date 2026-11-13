@@ -110,16 +110,12 @@ const Harness = struct {
 
     /// Assert the editor's line `line` reached the frame, byte for byte.
     fn expectEditorDrawn(self: *Harness, line: usize) !void {
-        var buf: [4096]u8 = undefined;
         const ed = &self.app.ed;
         const start = ed.lineStartAt(line);
         var end = start;
         while (end < ed.len and ed.buf[end] != '\n') end += 1;
-        const caret: ?usize = if (ed.caret.offset >= start and ed.caret.offset <= end)
-            ed.caret.offset - start
-        else
-            null;
-        const expected = editor.renderLineWithCaret(ed.buf[start..end], caret, &buf);
+        // The caret is a box floated over the line, so the drawn run is the buffer's line verbatim.
+        const expected = ed.buf[start..end];
         try testing.expect(expected.len > 1); // not an empty line
         try self.driver.expectText(expected);
     }
@@ -689,6 +685,33 @@ test "no two click targets share an element id (a duplicate resolves to the wron
         }
     }
     try testing.expectEqual(@as(usize, 0), dups);
+}
+
+test "the caret is a box at the caret column, not a glyph inside the text" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    h.installKeys();
+    _ = h.app.ed.insertSlice("SELECT 1");
+    h.app.ed.setCaret(3, false);
+    h.driver.frame();
+
+    const line = h.driver.box("editor.line.0") orelse return error.ElementNotFound;
+    const caret = h.driver.box("editor.caret.0") orelse return error.ElementNotFound;
+    // Three columns in, and a bar rather than a character cell.
+    try testing.expectApproxEqAbs(line.x + 3 * theme.mono_char_w, caret.x, 0.5);
+    try testing.expectEqual(@as(f32, 1), caret.width);
+    try testing.expect(caret.height > @as(f32, @floatFromInt(theme.font_size)));
+    // The line is drawn verbatim, so nothing was inserted into it.
+    try h.driver.expectText("SELECT 1");
+
+    // Moving the caret moves the bar, and the drawn text does not shift with it.
+    h.app.ed.setCaret(6, false);
+    h.driver.frame();
+    const moved = h.driver.box("editor.caret.0") orelse return error.ElementNotFound;
+    try testing.expectApproxEqAbs(line.x + 6 * theme.mono_char_w, moved.x, 0.5);
+    try h.driver.expectText("SELECT 1");
 }
 
 // ---- Clipboard ----
