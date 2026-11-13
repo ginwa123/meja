@@ -662,6 +662,35 @@ test "clicking a line in the SQL editor puts the caret on that line" {
     try testing.expectEqualStrings("SELECT 1\nFROM t", h.app.ed.text());
 }
 
+test "no two click targets share an element id (a duplicate resolves to the wrong box)" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    h.installKeys();
+    try h.typeText("SELECT * FROM users");
+    h.run();
+    h.frame();
+    h.frame();
+
+    const reg = ui.components.click_registry;
+    var dups: usize = 0;
+    var i: usize = 0;
+    while (i < reg.hitCount()) : (i += 1) {
+        const a = reg.hitAt(i).?;
+        var j: usize = i + 1;
+        while (j < reg.hitCount()) : (j += 1) {
+            const b = reg.hitAt(j).?;
+            if (a.id.id == b.id.id and a.id.offset == b.id.offset) {
+                dups += 1;
+                // A duplicate makes `getElementData` return the other element's box, so the click and the cursor land on the wrong component.
+                std.debug.print("duplicate click id {d} (offset {d}) at entries {d} and {d}\n", .{ a.id.id, a.id.offset, i, j });
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 0), dups);
+}
+
 // ---- Clipboard ----
 
 var fake_clipboard: [4096]u8 = undefined;
