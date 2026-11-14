@@ -152,6 +152,8 @@ pub const App = struct {
     queries: usize = 0,
     /// Tree row count of the last frame, so a rebuild that changes it is logged once instead of every frame.
     last_tree_len: usize = 0,
+    /// Focus at the end of the last frame, so a change is logged once, where it happened.
+    prev_focus: Focus = .sql_editor,
     /// Decides when the grid has scrolled into the bottom zone and needs another chunk. The toolkit owns the rule.
     loader: glin.table.Loader = .{},
     sort_col: ?usize = null,
@@ -190,6 +192,10 @@ pub const App = struct {
         self.filter_ed.focused = self.focus == .row_filter;
         self.palette_ed.focused = self.focus == .palette;
         self.picker.field.focused = self.focus == .path;
+        if (self.focus != self.prev_focus) {
+            trace.log("frame {d} FOCUS {s} -> {s}", .{ self.frame_no, @tagName(self.prev_focus), @tagName(self.focus) });
+            self.prev_focus = self.focus;
+        }
     }
 
     /// Initialise IN PLACE.
@@ -211,12 +217,20 @@ pub const App = struct {
 
     /// Write the status line.
     pub fn setStatus(self: *App, comptime fmt: []const u8, args: anytype) void {
+        // `self.status` points INTO `status_buf`, so the old text must be copied out before the buffer is overwritten.
+        var before_buf: [256]u8 = undefined;
+        const before_len = if (trace.on()) @min(self.status.len, before_buf.len) else 0;
+        @memcpy(before_buf[0..before_len], self.status[0..before_len]);
         self.status = std.fmt.bufPrint(self.status_buf[0..], fmt, args) catch
             self.status_buf[0..0];
+        if (trace.on() and !std.mem.eql(u8, before_buf[0..before_len], self.status)) {
+            trace.log("frame {d} STATUS \"{s}\" -> \"{s}\"", .{ self.frame_no, before_buf[0..before_len], self.status });
+        }
     }
 
     /// Open a database and load the schema. Safe to call twice.
     pub fn open(self: *App, path: []const u8) void {
+        trace.log("frame {d} DB OPEN {s}", .{ self.frame_no, path });
         if (self.db_open) {
             self.db.deinit();
             self.db_open = false;
@@ -258,6 +272,7 @@ pub const App = struct {
 
     /// Show the picker and put the keyboard in the path field.
     pub fn openPicker(self: *App) void {
+        trace.log("frame {d} PICKER OPEN", .{self.frame_no});
         self.picker.open = true;
         self.focus = .path;
 
@@ -315,6 +330,7 @@ pub const App = struct {
     }
 
     pub fn closePicker(self: *App) void {
+        trace.log("frame {d} PICKER CLOSE", .{self.frame_no});
         self.picker.open = false;
         self.focus = .sql_editor;
         if (self.db_open) self.setStatus("ready — {s}", .{self.db_path});
@@ -480,6 +496,11 @@ pub const App = struct {
 
     /// Size each column to its widest cell.
     pub fn recomputeColumnWidths(self: *App) void {
+        defer {
+            if (self.col_widths.items.len > 0) {
+                trace.log("frame {d} COLUMNS {d} widths={any}", .{ self.frame_no, self.col_widths.items.len, self.col_widths.items });
+            }
+        }
         self.col_widths.deinit(self.gpa);
         self.col_widths = .empty;
         if (!self.has_result) return;
@@ -618,6 +639,7 @@ pub const App = struct {
     /// Close a tab and fall back to its neighbour.
     pub fn closeTab(self: *App, i: usize) void {
         if (i >= self.tabs.items.len) return;
+        trace.log("frame {d} CLOSE TAB {d} of {d}", .{ self.frame_no, i, self.tabs.items.len });
         const t = self.tabs.items[i];
         self.gpa.free(t.title);
         self.gpa.free(t.sql);
@@ -781,8 +803,12 @@ pub const App = struct {
 
     /// Set the tree's search text.
     pub fn setTreeSearch(self: *App, text: []const u8) void {
+        const before = self.tree_search;
         self.tree_search_ed.setText(text);
         self.tree_search = self.tree_search_ed.text();
+        if (!std.mem.eql(u8, before, self.tree_search)) {
+            trace.log("frame {d} TREE SEARCH \"{s}\" -> \"{s}\"", .{ self.frame_no, before, self.tree_search });
+        }
     }
 
     /// Set the grid's row filter and rebuild the display order.
@@ -793,25 +819,35 @@ pub const App = struct {
 
     /// Re-read the filter from its editor and rebuild the display order.
     pub fn syncFilter(self: *App) void {
+        const before = self.filter;
         self.filter = self.filter_ed.text();
+        if (!std.mem.eql(u8, before, self.filter)) {
+            trace.log("frame {d} FILTER \"{s}\" -> \"{s}\"", .{ self.frame_no, before, self.filter });
+        }
         self.page = 0;
         self.rebuildRowOrder();
     }
 
     /// Set the palette's query text.
     pub fn setPalette(self: *App, text: []const u8) void {
+        const before = self.palette;
         self.palette_ed.setText(text);
         self.palette = self.palette_ed.text();
         self.palette_idx = 0;
+        if (!std.mem.eql(u8, before, self.palette)) {
+            trace.log("frame {d} PALETTE TEXT \"{s}\" -> \"{s}\"", .{ self.frame_no, before, self.palette });
+        }
     }
 
     pub fn openPalette(self: *App) void {
+        trace.log("frame {d} PALETTE OPEN", .{self.frame_no});
         self.palette_open = true;
         self.focus = .palette;
         self.setPalette("");
     }
 
     pub fn closePalette(self: *App) void {
+        trace.log("frame {d} PALETTE CLOSE", .{self.frame_no});
         self.palette_open = false;
         self.focus = .sql_editor;
     }
@@ -857,13 +893,16 @@ pub const App = struct {
             self.sort_dir = 1;
         }
         self.page = 0;
+        trace.log("frame {d} SORT col={any} dir={d}", .{ self.frame_no, self.sort_col, self.sort_dir });
         self.rebuildRowOrder();
     }
 
     /// Move to a page, clamped.
     pub fn setPage(self: *App, page: usize) void {
         const pages = self.pageCount();
-        self.page = @min(page, pages - 1);
+        const next = @min(page, pages - 1);
+        if (next != self.page) trace.log("frame {d} PAGE {d} -> {d}", .{ self.frame_no, self.page, next });
+        self.page = next;
     }
 
     /// The grid is one continuous list, so there is exactly one page.
@@ -905,6 +944,12 @@ pub const App = struct {
 
     /// Recompute the display order from the filter and the sort.
     pub fn rebuildRowOrder(self: *App) void {
+        const before = self.row_order.items.len;
+        defer {
+            if (self.row_order.items.len != before) {
+                trace.log("frame {d} ROWS {d} -> {d} (filtered from {d})", .{ self.frame_no, before, self.row_order.items.len, if (self.has_result) self.result.rowCount() else 0 });
+            }
+        }
         self.row_order.deinit(self.gpa);
         self.row_order = .empty;
         if (!self.has_result) return;
