@@ -138,6 +138,7 @@ pub fn filterField(self: *App) void {
         .bg = theme.bg_editor,
         .sel_fg = theme.text_bright,
         .sel_bg = theme.bg_selected,
+        .caret_fg = theme.caret,
         .w = 180,
         .h = 22,
         .pad_tb = 2,

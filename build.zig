@@ -138,6 +138,26 @@ pub fn build(b: *std.Build) void {
         inspect_step.dependOn(&run_inspect.step);
     }
 
+    // --- verify: render with the REAL font and check the caret against the pixels --- Not installed; `zig build verify`.
+    if (glinlandui_dep) |gdep| {
+        const verify = b.addExecutable(.{
+            .name = "meja-verify",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/gui/verify.zig"),
+                .target = target,
+                .optimize = gui_optimize,
+                .imports = &.{
+                    .{ .name = "meja", .module = meja_mod },
+                    .{ .name = "databases", .module = databases_mod },
+                    .{ .name = "glinlandui", .module = gdep.module("glinlandui") },
+                },
+            }),
+        });
+        const run_verify = b.addRunArtifact(verify);
+        const verify_step = b.step("verify", "Render with the real font and check the caret pixels");
+        verify_step.dependOn(&run_verify.step);
+    }
+
     // --- tests --- The core is tested directly against the `meja` module.
     const core_tests = b.addTest(.{ .root_module = meja_mod });
     const run_core_tests = b.addRunArtifact(core_tests);

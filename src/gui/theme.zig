@@ -32,6 +32,9 @@ pub const text_null_value = Color.hexC("#4f6a8a");
 
 // Accents.
 pub const accent = Color.hexC("#7aa2c4");
+/// The insertion point. Deliberately NOT the text colour: a caret that matches the text merges with the glyph it
+/// touches, and a 1 px bar across a digit then reads as a malformed character.
+pub const caret = Color.hexC("#9dc0e0");
 pub const ok = Color.hexC("#7fae8a");
 pub const warn = Color.hexC("#c8a45c");
 pub const danger = Color.hexC("#c86a6a");

@@ -50,6 +50,7 @@ pub fn treeSearchField(self: *App) void {
         .bg = theme.bg_editor,
         .sel_fg = theme.text_bright,
         .sel_bg = theme.bg_selected,
+        .caret_fg = theme.caret,
         .h = 28,
         .pad_tb = 4,
         .pad_lr = 8,

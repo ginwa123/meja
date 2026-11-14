@@ -36,6 +36,7 @@ pub fn paletteBandChildren(self: *App) void {
         .bg = theme.bg_editor,
         .sel_fg = theme.text_bright,
         .sel_bg = theme.bg_selected,
+        .caret_fg = theme.caret,
         .h = 30,
         .pad_tb = 5,
         .pad_lr = 10,

@@ -19,6 +19,11 @@ const picker_mod = @import("components/picker.zig");
 const dialog = @import("components/dialog.zig");
 const theme = @import("theme.zig");
 
+/// Measures a run with the font that draws it, so a field's caret sits on the glyph boundary instead of on a guess.
+fn measureRun(bytes: []const u8, font_size: u16) f32 {
+    return glin.text.measureText(bytes, font_size).w;
+}
+
 /// Largest clipboard run this app will move: a SQL editor buffer, not a document.
 const clipboard_max: usize = 64 * 1024;
 
@@ -189,9 +194,9 @@ pub const App = struct {
         self.filter_ed = text_editor.Editor.init(&self.filter_buf);
         self.palette_ed = text_editor.Editor.init(&self.palette_buf);
         // The live fields need a stable context each, so the click callback can find its model.
-        self.tree_search_ctx = .{ .input = &self.tree_search_ed, .id = "sidebar.search", .char_w = 7.8, .on_focus = focusTreeSearch, .focus_ctx = self };
-        self.filter_ctx = .{ .input = &self.filter_ed, .id = "results.filter", .char_w = 6.6, .on_focus = focusFilter, .focus_ctx = self };
-        self.palette_ctx = .{ .input = &self.palette_ed, .id = "palette.input", .char_w = 8.4, .on_focus = focusPalette, .focus_ctx = self };
+        self.tree_search_ctx = .{ .input = &self.tree_search_ed, .id = "sidebar.search", .char_w = 7.8, .measure = measureRun, .on_focus = focusTreeSearch, .focus_ctx = self };
+        self.filter_ctx = .{ .input = &self.filter_ed, .id = "results.filter", .char_w = 6.6, .measure = measureRun, .on_focus = focusFilter, .focus_ctx = self };
+        self.palette_ctx = .{ .input = &self.palette_ed, .id = "palette.input", .char_w = 8.4, .measure = measureRun, .on_focus = focusPalette, .focus_ctx = self };
         // Same rule for the picker's own field buffer.
         self.picker.init();
         self.setStatus("no database open — Ctrl+O to choose one", .{});

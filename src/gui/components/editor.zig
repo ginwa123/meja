@@ -210,16 +210,17 @@ fn offsetAtX(text: []const u8, x: f32) usize {
 fn caretBar(self: *App, line: usize, at: usize, text: []const u8) void {
     cl.UI()(.{
         .id = .ID(self.cellId("editor.caret", line)),
-        .layout = .{ .sizing = .{ .w = .fixed(1), .h = .fixed(@floatFromInt(theme.font_size + 4)) } },
+        .layout = .{ .sizing = .{ .w = .fixed(ui.frame.hairline()), .h = .fixed(@floatFromInt(theme.font_size + 4)) } },
         .floating = .{
-            // The font's own advance for the run before the caret: a fixed cell width drifts and overlaps the glyph.
-            .offset = .{ .x = columnX(text, at), .y = 1 },
+            // The font's own advance for the run before the caret, snapped to the device grid so the 1 px bar
+            // covers whole pixels instead of antialiasing into the glyph beside it.
+            .offset = .{ .x = ui.frame.snapX(columnX(text, at)), .y = 1 },
             .attach_to = .to_parent,
             .attach_points = .{ .element = .left_top, .parent = .left_top },
             .z_index = 2,
         },
         // Hidden by going transparent, never by leaving it out: a missing box would reflow the line on every blink.
-        .background_color = if (editor.caretVisible(&self.ed)) theme.text_bright.toClay() else .{ 0, 0, 0, 0 },
+        .background_color = if (editor.caretVisible(&self.ed)) theme.caret.toClay() else .{ 0, 0, 0, 0 },
     })({});
 }
 
