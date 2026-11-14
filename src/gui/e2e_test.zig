@@ -716,6 +716,115 @@ test "the caret is a box at the caret column, not a glyph inside the text" {
     try h.driver.expectText("SELECT 1");
 }
 
+// ---- Layout structure ----
+//
+// These are the invariants a screenshot review is for, written down: regions stack, they do not overlap, and each one
+// is where the theme says it is. They are font-independent, so they hold on any machine.
+
+/// The box of a stable element id, or a test failure naming it.
+fn boxOf(h: *Harness, id: []const u8) !ui.zclay.BoundingBox {
+    return h.driver.box(id) orelse {
+        std.debug.print("no element with id '{s}' in the frame\n", .{id});
+        return error.ElementNotFound;
+    };
+}
+
+/// The bottom edge of a box.
+fn bottom(b: ui.zclay.BoundingBox) f32 {
+    return b.y + b.height;
+}
+
+/// The right edge of a box.
+fn right(b: ui.zclay.BoundingBox) f32 {
+    return b.x + b.width;
+}
+
+test "the main screen's regions stack without overlapping" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    h.installKeys();
+    try h.typeText("SELECT * FROM users");
+    h.run();
+    h.frame();
+
+    const topbar = try boxOf(&h, "topbar");
+    const main = try boxOf(&h, "main");
+    const status = try boxOf(&h, "status");
+    const sidebar = try boxOf(&h, "sidebar");
+    const work = try boxOf(&h, "work");
+
+    // The topbar is the first row and the status bar the last.
+    try testing.expectEqual(@as(f32, 0), topbar.y);
+    try testing.expectApproxEqAbs(theme.topbar_h, topbar.height, 0.5);
+    try testing.expectApproxEqAbs(@as(f32, 800), bottom(status), 0.5);
+
+    // The main row fills the space between them, with no overlap at either edge.
+    try testing.expectApproxEqAbs(bottom(topbar), main.y, 0.5);
+    try testing.expect(bottom(main) <= status.y + 0.5);
+
+    // The sidebar and the workspace are side by side, the same height, and do not overlap.
+    try testing.expectEqual(@as(f32, 0), sidebar.x);
+    try testing.expectApproxEqAbs(theme.sidebar_width, sidebar.width, 0.5);
+    try testing.expectApproxEqAbs(main.height, sidebar.height, 0.5);
+    try testing.expectApproxEqAbs(bottom(sidebar), bottom(work), 0.5);
+    try testing.expect(right(sidebar) <= work.x + 0.5);
+}
+
+test "the workspace stacks tabs, editor and results without overlapping" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    h.installKeys();
+    try h.typeText("SELECT * FROM users");
+    h.run();
+    h.frame();
+
+    const work = try boxOf(&h, "work");
+    // No table has been opened in this harness, so the tab band is the empty-state box.
+    const tabs = try boxOf(&h, "tabs.empty");
+    const editor_box = try boxOf(&h, "editor");
+    const results = try boxOf(&h, "results");
+
+    try testing.expectApproxEqAbs(work.y, tabs.y, 0.5);
+    try testing.expect(bottom(tabs) <= editor_box.y + 0.5);
+    try testing.expect(bottom(editor_box) <= results.y + 0.5);
+    try testing.expectApproxEqAbs(bottom(work), bottom(results), 0.5);
+    // All three are the full width of the workspace.
+    for ([_]ui.zclay.BoundingBox{ tabs, editor_box, results }) |b| {
+        try testing.expectApproxEqAbs(work.x, b.x, 0.5);
+        try testing.expectApproxEqAbs(work.width, b.width, 0.5);
+    }
+}
+
+test "the results grid's bar, header and body stack without overlapping" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    h.installKeys();
+    try h.typeText("SELECT * FROM users");
+    h.run();
+    h.frame();
+
+    const results = try boxOf(&h, "results");
+    const bar = try boxOf(&h, "results.bar");
+    const header = try boxOf(&h, "grid.header");
+    const body = try boxOf(&h, "grid.scroll");
+    const pager = try boxOf(&h, "pager");
+
+    // The bug this guards: the header used to be laid out over the first row of the body.
+    try testing.expectApproxEqAbs(results.y, bar.y, 0.5);
+    try testing.expect(bottom(bar) <= header.y + 0.5);
+    try testing.expect(bottom(header) <= body.y + 0.5);
+    // The pager owns the last strip of the pane, and the body stops above it rather than running under it.
+    try testing.expect(bottom(body) <= pager.y + 0.5);
+    try testing.expectApproxEqAbs(bottom(results), bottom(pager), 0.5);
+    try testing.expect(header.width <= body.width + 0.5);
+}
+
 // ---- Double click ----
 
 var fake_now_ms: i64 = 0;
