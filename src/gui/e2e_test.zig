@@ -877,6 +877,31 @@ test "a blinking caret leaves the scrolled grid exactly where it is" {
     }
 }
 
+test "the sidebar scrollbar does not overlap the tree" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    // Five tables of fifteen columns: a tree taller than the sidebar, so the scrollbar is there and the content must stop short of it.
+    for (0..5) |t| {
+        var sql_buf: [768]u8 = undefined;
+        const stmt = try std.fmt.bufPrint(&sql_buf, "CREATE TABLE t{d} (c1 INTEGER, c2 TEXT, c3 TEXT, c4 TEXT, c5 TEXT, c6 TEXT, c7 TEXT, c8 TEXT, c9 TEXT, c10 TEXT, c11 TEXT, c12 TEXT, c13 TEXT, c14 TEXT, c15 TEXT)", .{t});
+        try h.app.db.exec(h.app.gpa, stmt, &.{});
+    }
+    h.app.loadTables();
+    h.installKeys();
+    h.frame();
+    var i: usize = 0;
+    while (i < h.app.tables.items.len) : (i += 1) h.app.toggleTable(i);
+    h.frame();
+    h.frame();
+
+    const thumb = ui.zclay.getElementData(ui.zclay.ElementId.IDI("sidebar.scroll", ui.components.scroll.vthumb_index));
+    const tree = try boxOf(&h, "sidebar.tree");
+    try testing.expect(thumb.found);
+    // The tree ends where the thumb begins: a right-aligned type name can no longer run under it.
+    try testing.expect(tree.x + tree.width <= thumb.bounding_box.x + 0.5);
+}
+
 // ---- Frame stability ----
 
 // What one rendered frame looked like, per command: a digest, the element id and the box.
