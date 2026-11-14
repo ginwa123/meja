@@ -829,6 +829,54 @@ test "clicking a table in the sidebar opens its tab and loads its rows" {
     try h.driver.expectText("users");
 }
 
+test "a blinking caret leaves the scrolled grid exactly where it is" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try h.app.db.exec(h.app.gpa, "CREATE TABLE big (id INTEGER PRIMARY KEY, name TEXT)", &.{});
+    for (0..600) |i| {
+        var buf: [96]u8 = undefined;
+        const q = try std.fmt.bufPrint(&buf, "INSERT INTO big (id, name) VALUES ({d}, 'row {d}')", .{ i, i });
+        try h.app.db.exec(h.app.gpa, q, &.{});
+    }
+    h.installKeys();
+    try h.typeText("SELECT * FROM big");
+    h.run();
+    h.frame();
+    // Scrolled into the middle: the caret used to drop the scroll offset here, so the rows jumped back to the top of the content.
+    var step: usize = 0;
+    while (step < 5) : (step += 1) {
+        ui.components.scroll.scrollBy("grid.scroll", 0, 120);
+        h.driver.frame();
+    }
+    try testing.expectEqual(@as(f32, -600), ui.zclay.getScrollContainerData(ui.zclay.getElementId("grid.scroll")).scroll_position.y);
+
+    var shapes: [2]FrameShape = .{ .{}, .{} };
+    const idles = [2]f32{ 0, 0.6 };
+    for (0..2) |i| {
+        h.app.ed.idle = idles[i];
+        shape_slot = &shapes[i];
+        var opts: ui.frame.FrameOptions = .{ .probe = probeShape };
+        _ = h.driver.host.frameWithOptions(1200, 800, &opts);
+    }
+    h.app.ed.idle = 0;
+
+    // The dark frame is the lit frame minus the caret: every other command, in order, at the same box.
+    const lit = &shapes[0];
+    const dark = &shapes[1];
+    try testing.expectEqual(lit.n, dark.n + 1);
+    var li: usize = 0;
+    var di: usize = 0;
+    while (di < dark.n) : (di += 1) {
+        while (li < lit.n and lit.digests[li] != dark.digests[di]) : (li += 1) {}
+        if (li == lit.n) {
+            std.debug.print("dark cmd {d} id={d} box={any} has no match in the lit frame\n", .{ di, dark.ids[di], dark.boxes[di] });
+            return error.FrameChanged;
+        }
+        li += 1;
+    }
+}
+
 // ---- Frame stability ----
 
 // What one rendered frame looked like, per command: a digest, the element id and the box.
