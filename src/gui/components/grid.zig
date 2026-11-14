@@ -106,14 +106,10 @@ pub fn gridColumnsChildren(self: *App) void {
 /// Ask for the next chunk when the viewport is within a row of the bottom.
 pub fn maybeLoadMore(self: *App) void {
     if (!self.has_result or !self.result.truncated) return;
-    const data = ui.zclay.getScrollContainerData(ui.zclay.getElementId("grid.scroll"));
-    if (!data.found) return;
-    const view = data.scroll_container_dimensions.h;
-    const content = data.content_dimensions.h;
-    if (content <= view) return;
-    // Clay's scroll position is negative going down; the toolkit's loader is edge-triggered, so one gesture asks once.
-    const scrolled = @max(-data.scroll_position.y, 0);
-    if (!self.loader.wantsMore(scrolled, view, content, 40)) return;
+    const v = scroll_mod.view("grid.scroll");
+    if (!v.found) return;
+    if (v.content_height <= v.height) return;
+    if (!self.loader.wantsMore(v.y, v.height, v.content_height, 40)) return;
     self.loadMore();
 }
 
@@ -152,8 +148,7 @@ pub fn gridHeaderChildren(self: *App) void {
     }, self, headerNumChildren);
 
     // The header is outside the scroll container, so it follows the body's horizontal offset by hand.
-    const data = ui.zclay.getScrollContainerData(ui.zclay.getElementId("grid.scroll"));
-    const sx: f32 = if (data.found) @max(-data.scroll_position.x, 0) else 0;
+    const sx: f32 = scroll_mod.view("grid.scroll").x;
 
     var x: f32 = 0;
     var first: usize = 0;
@@ -192,7 +187,7 @@ pub fn headerCell(self: *App, c: usize) void {
         .gap = 6,
     }, HeaderCtx{ .app = self, .col = c }, headerCellChildren);
 
-    registry.registerZCursor(ui.zclay.getElementId(id), onHeaderClick, self, c, 0, .pointer);
+    registry.registerZCursor(ui.frame.clayId(id), onHeaderClick, self, c, 0, .pointer);
 }
 
 pub fn headerCellChildren(ctx: HeaderCtx) void {
@@ -237,10 +232,10 @@ pub fn gridRows(self: *App) void {
     var first: usize = 0;
     // A hard cap even before the scroll data exists: the first frame has no scroll offset, and declaring 200 rows x 13 columns exhausts the frame arena, which makes every id fall back to the same string and Clay log duplicate_id for each one.
     var visible: usize = @min(total, 60);
-    const data = ui.zclay.getScrollContainerData(ui.zclay.getElementId("grid.scroll"));
-    if (data.found) {
-        const scrolled = @max(-data.scroll_position.y, 0);
-        const view = data.scroll_container_dimensions.h;
+    const v = scroll_mod.view("grid.scroll");
+    if (v.found) {
+        const scrolled = v.y;
+        const view = v.height;
         const first_f: f32 = @floor(scrolled / row_h);
         first = @min(@as(usize, @intFromFloat(first_f)), total -| 1);
         const fits_f: f32 = @ceil(view / row_h) + 2;

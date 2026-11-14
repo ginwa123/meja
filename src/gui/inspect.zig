@@ -82,13 +82,12 @@ pub fn main(init: std.process.Init) !void {
     // Where the results pane's pieces actually landed, which is the only way to see an overlap.
     const ids = [_][]const u8{ "results.bar", "grid.header", "grid.scroll", "grid.row.0", "grid.row.1", "pager" };
     for (ids) |id| {
-        const d = ui.zclay.getElementData(ui.zclay.getElementId(id));
-        if (!d.found) {
+        const d = ui.frame.bounds(ui.frame.clayId(id)) orelse {
             try w.print("BOX {s}: not found\n", .{id});
             continue;
-        }
+        };
         try w.print("BOX {s}: x={d:.0} y={d:.0} w={d:.0} h={d:.0}\n", .{
-            id, d.bounding_box.x, d.bounding_box.y, d.bounding_box.width, d.bounding_box.height,
+            id, d.x, d.y, d.width, d.height,
         });
     }
 

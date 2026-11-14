@@ -5,6 +5,7 @@ const ui = @import("glinlandui");
 const Io = std.Io;
 
 const editor = ui.text_editor;
+const input = ui.components.input;
 
 /// Longest path the picker holds, in bytes.
 pub const path_capacity: usize = 512;
@@ -43,9 +44,9 @@ pub const Picker = struct {
     dir_buf: [path_capacity]u8 = undefined,
     dir_len: usize = 0,
 
-    /// The typed path.
+    /// The typed path: the engine's field, bound to this picker's own buffer.
     field_buf: [path_capacity]u8 = undefined,
-    field: editor.Editor = undefined,
+    field: input.Field = .{ .id = .{ .text = "picker.path" } },
 
     /// What `dir_buf` holds: subdirectories first, then database files, each group in name order so the listing does not reshuffle between scans.
     entries: std.ArrayList(Candidate) = .empty,
@@ -59,7 +60,7 @@ pub const Picker = struct {
     /// Initialise IN PLACE, and bind the field to its own storage.
     pub fn init(self: *Picker) void {
         self.* = .{};
-        self.field = editor.Editor.init(&self.field_buf);
+        self.field.bindTo(&self.field_buf);
     }
 
     pub fn deinit(self: *Picker, gpa: std.mem.Allocator) void {
@@ -214,9 +215,9 @@ test "the field is bound to the picker's own storage" {
 
     try testing.expectEqual(
         @intFromPtr(&p.field_buf),
-        @intFromPtr(p.field.buf.ptr),
+        @intFromPtr(p.field.editor.buf.ptr),
     );
-    try testing.expectEqual(@as(usize, p.field_buf.len), p.field.buf.len);
+    try testing.expectEqual(@as(usize, p.field_buf.len), p.field.editor.buf.len);
     try testing.expectEqualStrings("some.db", p.field.text());
 }
 

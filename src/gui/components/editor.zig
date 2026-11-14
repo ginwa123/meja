@@ -11,7 +11,6 @@ const tree_mod = ui.components.tree;
 const tabs_mod = ui.components.tabs;
 const badge_mod = ui.components.badge;
 
-const cl = ui.zclay;
 const caret_mod = ui.components.caret;
 const app_mod = @import("../app.zig");
 const LineClick = app_mod.LineClick;
@@ -95,7 +94,7 @@ pub fn editorBodyChildren(self: *App) void {
             .direction = .row,
             .child_align = .{ .y = .center },
         }, &self.line_clicks[line], editorLineChildren);
-        registry.registerClickDoubleCursor(cl.getElementId(id), onLineClick, onLineDoubleClick, &self.line_clicks[line], .text);
+        registry.registerClickDoubleCursor(ui.frame.clayId(id), onLineClick, onLineDoubleClick, &self.line_clicks[line], .text);
     }
 }
 
@@ -112,9 +111,8 @@ fn lineOffsetAtPointer(self: *App, line: usize) ?usize {
     var end = start;
     while (end < self.ed.len and self.ed.buf[end] != '\n') end += 1;
     // The body is the box every line shares, and its padding is where the text starts.
-    const body = cl.getElementData(cl.getElementId("editor.body"));
-    if (!body.found) return null;
-    const rel_x = @max(ui.frame.ptr_x - body.bounding_box.x - 6, 0);
+    const body = ui.frame.bounds(ui.frame.clayId("editor.body")) orelse return null;
+    const rel_x = @max(ui.frame.ptr_x - body.x - 6, 0);
     return start + editor.offsetAtX(self.ed.buf[start..end], rel_x, theme.font_size, measureRun);
 }
 

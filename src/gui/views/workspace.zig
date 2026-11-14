@@ -128,19 +128,7 @@ pub fn resultsStats(self: *App) void {
 }
 
 pub fn filterField(self: *App) void {
-    input_mod.liveField(.{
-        .id = .{ .text = "results.filter" },
-        .font_size = theme.font_size_tiny,
-        .fg = theme.text,
-        .bg = theme.bg_editor,
-        .sel_fg = theme.text_bright,
-        .sel_bg = theme.bg_selected,
-        .caret_fg = theme.caret,
-        .w = .{ .fixed = 180 },
-        .h = .{ .fixed = 22 },
-        .pad = props.Pad.axes(2, 8),
-        .border = .{ .width = 1, .color = theme.line },
-    }, &self.filter_ctx);
+    input_mod.TextField(&self.filter_field);
 }
 
 fn onTabSelect(ctx: ?*anyopaque, index: usize) void {

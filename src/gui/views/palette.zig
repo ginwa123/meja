@@ -30,18 +30,7 @@ pub fn paletteBand(self: *App) void {
 }
 
 pub fn paletteBandChildren(self: *App) void {
-    input_mod.liveField(.{
-        .id = .{ .text = "palette.input" },
-        .font_size = theme.font_size,
-        .fg = theme.text_bright,
-        .bg = theme.bg_editor,
-        .sel_fg = theme.text_bright,
-        .sel_bg = theme.bg_selected,
-        .caret_fg = theme.caret,
-        .h = .{ .fixed = 30 },
-        .pad = props.Pad.axes(5, 10),
-        .border = .{ .width = 1, .color = theme.line },
-    }, &self.palette_ctx);
+    input_mod.TextField(&self.palette_field);
 
     const matches = self.paletteMatchCount();
     if (matches == 0) {
@@ -74,7 +63,7 @@ pub fn paletteRow(self: *App, i: usize) void {
         .gap = 8,
     }, PaletteCtx{ .app = self, .table_index = table_index }, paletteRowChildren);
 
-    registry.registerZCursor(ui.zclay.getElementId(id), onPaletteRowClick, self, table_index, 0, .pointer);
+    registry.registerZCursor(ui.frame.clayId(id), onPaletteRowClick, self, table_index, 0, .pointer);
 }
 
 pub fn paletteRowChildren(ctx: PaletteCtx) void {

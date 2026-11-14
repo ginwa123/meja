@@ -120,14 +120,14 @@ pub fn main(init: std.process.Init) !void {
     failures += try check(w, &driver, .{
         .tag = "FIELD  sidebar.search",
         .id = .{ .text = "sidebar.search" },
-        .caret_id = ui.zclay.ElementId.IDI("sidebar.search", 2),
+        .caret_id = ui.frame.itemId("sidebar.search", 2),
         .editor = &app.tree_search_ed,
         .focus = .tree_search,
     });
     failures += try check(w, &driver, .{
         .tag = "EDITOR line 0",
         .id = .{ .text = "editor.line.0" },
-        .caret_id = ui.zclay.ElementId.IDI("editor.caret.0", 0),
+        .caret_id = ui.frame.itemId("editor.caret.0", 0),
         .editor = &app.ed,
         .focus = .sql_editor,
     });
@@ -186,7 +186,7 @@ fn reportLitDarkDiff(w: *std.Io.Writer, driver: *Driver, app: *app_mod.App) !usi
 const Case = struct {
     tag: []const u8,
     id: []const u8,
-    caret_id: ui.zclay.ElementId,
+    caret_id: ui.ElementId,
     editor: *ui.text_editor.Editor,
     focus: app_mod.Focus,
 };
@@ -223,8 +223,8 @@ fn check(w: *std.Io.Writer, driver: *Driver, case: Case) !usize {
     case.editor.idle = 0;
 
     const bg = rgbOf(theme.bg_editor);
-    const box = ui.zclay.getElementData(ui.zclay.getElementId(case.id)).bounding_box;
-    const caret = ui.zclay.getElementData(case.caret_id).bounding_box;
+    const box = ui.frame.bounds(ui.frame.clayId(case.id)) orelse return error.NoBox;
+    const caret = ui.frame.bounds(case.caret_id) orelse return error.NoCaret;
     const lit = band(lit_frame, box, bg);
     const dark = band(dark_frame, box, bg);
 

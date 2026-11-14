@@ -44,18 +44,7 @@ pub fn sidebarChildren(self: *App) void {
 }
 
 pub fn treeSearchField(self: *App) void {
-    input_mod.liveField(.{
-        .id = .{ .text = "sidebar.search" },
-        .font_size = theme.font_size_small,
-        .fg = theme.text,
-        .bg = theme.bg_editor,
-        .sel_fg = theme.text_bright,
-        .sel_bg = theme.bg_selected,
-        .caret_fg = theme.caret,
-        .h = .{ .fixed = 28 },
-        .pad = props.Pad.axes(4, 8),
-        .border = .{ .width = 1, .color = theme.line },
-    }, &self.tree_search_ctx);
+    input_mod.TextField(&self.tree_search_field);
 }
 
 pub fn sidebarTree(self: *App) void {

@@ -609,7 +609,7 @@ test "composed text types Caps Lock, symbols and accents, and follows the focus"
     // The tree-search field is a different editor, so the routing has to follow the focus.
     h.app.focus = .tree_search;
     try testing.expect(h.driver.host.onTextEvent("A"));
-    try testing.expectEqualStrings("A", h.app.tree_search_ctx.editor.text());
+    try testing.expectEqualStrings("A", h.app.tree_search_field.editor.text());
     try testing.expectEqualStrings("SELECT * (\xc3\xa9", h.app.ed.text());
 
     // An empty run is not a keystroke: nothing to insert, nothing consumed.
@@ -634,11 +634,11 @@ test "dragging across a field selects the run under the pointer" {
     h.driver.move(bb.x + 8 + three, y);
     h.driver.releaseAt(bb.x + 8 + three, y);
 
-    const span = h.app.tree_search_ctx.editor.caret.selection() orelse return error.NoSelection;
+    const span = h.app.tree_search_field.editor.caret.selection() orelse return error.NoSelection;
     try testing.expect(span.start == 0);
     try testing.expectEqual(@as(usize, 3), span.end);
     // Selecting never edits the field.
-    try testing.expectEqualStrings("users", h.app.tree_search_ctx.editor.text());
+    try testing.expectEqualStrings("users", h.app.tree_search_field.editor.text());
 }
 
 test "clicking a line in the SQL editor puts the caret on that line" {
@@ -727,13 +727,13 @@ test "only the focused field draws a caret, so nothing blinks at you from anothe
     // The SQL editor owns the keyboard at startup: it has a caret, and the sidebar search field has none.
     try testing.expectEqual(app_mod.Focus.sql_editor, h.app.focus);
     try testing.expect(editor.caretVisible(&h.app.ed));
-    try testing.expect(!editor.caretVisible(&h.app.tree_search_ctx.editor));
+    try testing.expect(!editor.caretVisible(&h.app.tree_search_field.editor));
     try testing.expect(h.driver.box("editor.caret.0") != null);
 
     // Handing focus to the search field moves the one caret there; the editor reports none, so it draws none.
     h.app.focus = .tree_search;
     h.driver.frame();
-    try testing.expect(editor.caretVisible(&h.app.tree_search_ctx.editor));
+    try testing.expect(editor.caretVisible(&h.app.tree_search_field.editor));
     try testing.expect(fieldCaret("sidebar.search"));
     try testing.expect(!editor.caretVisible(&h.app.ed));
 
@@ -741,12 +741,12 @@ test "only the focused field draws a caret, so nothing blinks at you from anothe
     h.app.focus = .sql_editor;
     h.driver.frame();
     try testing.expect(editor.caretVisible(&h.app.ed));
-    try testing.expect(!editor.caretVisible(&h.app.tree_search_ctx.editor));
+    try testing.expect(!editor.caretVisible(&h.app.tree_search_field.editor));
 }
 
 // True when the live field with this id declared its caret this frame. The field floats it as IDI(id, 2).
 fn fieldCaret(field_id: []const u8) bool {
-    return ui.zclay.getElementData(ui.zclay.ElementId.IDI(field_id, 2)).found;
+    return ui.frame.bounds(ui.frame.itemId(field_id, 2)) != null;
 }
 
 test "a new statement starts at the base row budget again" {
@@ -849,7 +849,7 @@ test "a blinking caret leaves the scrolled grid exactly where it is" {
         ui.components.scroll.scrollBy("grid.scroll", 0, 120);
         h.driver.frame();
     }
-    try testing.expectEqual(@as(f32, -600), ui.zclay.getScrollContainerData(ui.zclay.getElementId("grid.scroll")).scroll_position.y);
+    try testing.expectEqual(@as(f32, 600), ui.components.scroll.view("grid.scroll").y);
 
     var shapes: [2]FrameShape = .{ .{}, .{} };
     const idles = [2]f32{ 0, 0.6 };
@@ -895,11 +895,10 @@ test "the sidebar scrollbar does not overlap the tree" {
     h.frame();
     h.frame();
 
-    const thumb = ui.zclay.getElementData(ui.zclay.ElementId.IDI("sidebar.scroll", ui.components.scroll.vthumb_index));
+    const thumb = ui.frame.bounds(ui.frame.itemId("sidebar.scroll", ui.components.scroll.vthumb_index)) orelse return error.NoThumb;
     const tree = try boxOf(&h, "sidebar.tree");
-    try testing.expect(thumb.found);
     // The tree ends where the thumb begins: a right-aligned type name can no longer run under it.
-    try testing.expect(tree.x + tree.width <= thumb.bounding_box.x + 0.5);
+    try testing.expect(tree.x + tree.width <= thumb.x + 0.5);
 }
 
 // ---- Frame stability ----
@@ -915,7 +914,7 @@ const FrameShape = struct {
 
 var shape_slot: ?*FrameShape = null;
 
-fn probeShape(_: ?*anyopaque, commands: []const ui.zclay.RenderCommand, w: u32, h: u32) void {
+fn probeShape(_: ?*anyopaque, commands: []const ui.RenderCommand, w: u32, h: u32) void {
     _ = w;
     _ = h;
     const slot: *FrameShape = @ptrCast(@alignCast(shape_slot.?));
@@ -945,9 +944,9 @@ test "an idle app renders the same frame twice (nothing in the list oscillates)"
     for (0..3) |i| {
         // Pin every caret clock, so the only thing that can differ is the list itself.
         h.app.ed.idle = 0;
-        h.app.tree_search_ctx.editor.idle = 0;
-        h.app.filter_ctx.editor.idle = 0;
-        h.app.palette_ctx.editor.idle = 0;
+        h.app.tree_search_field.editor.idle = 0;
+        h.app.filter_field.editor.idle = 0;
+        h.app.palette_field.editor.idle = 0;
         var opts: ui.frame.FrameOptions = .{ .probe = probeShape };
         shape_slot = &shapes[i];
         _ = h.driver.host.frameWithOptions(1200, 800, &opts);
@@ -978,7 +977,7 @@ test "an idle app renders the same frame twice (nothing in the list oscillates)"
 // where the theme says it is. They are font-independent, so they hold on any machine.
 
 // The box of a stable element id, or a test failure naming it.
-fn boxOf(h: *Harness, id: []const u8) !ui.zclay.BoundingBox {
+fn boxOf(h: *Harness, id: []const u8) !ui.frame.Bounds {
     return h.driver.box(id) orelse {
         std.debug.print("no element with id '{s}' in the frame\n", .{id});
         return error.ElementNotFound;
@@ -986,12 +985,12 @@ fn boxOf(h: *Harness, id: []const u8) !ui.zclay.BoundingBox {
 }
 
 // The bottom edge of a box.
-fn bottom(b: ui.zclay.BoundingBox) f32 {
+fn bottom(b: ui.frame.Bounds) f32 {
     return b.y + b.height;
 }
 
 // The right edge of a box.
-fn right(b: ui.zclay.BoundingBox) f32 {
+fn right(b: ui.frame.Bounds) f32 {
     return b.x + b.width;
 }
 
@@ -1049,7 +1048,7 @@ test "the workspace stacks tabs, editor and results without overlapping" {
     try testing.expect(bottom(editor_box) <= results.y + 0.5);
     try testing.expectApproxEqAbs(bottom(work), bottom(results), 0.5);
     // All three are the full width of the workspace.
-    for ([_]ui.zclay.BoundingBox{ tabs, editor_box, results }) |b| {
+    for ([_]ui.frame.Bounds{ tabs, editor_box, results }) |b| {
         try testing.expectApproxEqAbs(work.x, b.x, 0.5);
         try testing.expectApproxEqAbs(work.width, b.width, 0.5);
     }
@@ -1161,10 +1160,10 @@ test "double-clicking a word in a field selects it" {
     fake_now_ms = 1100;
     h.driver.clickAt(x, y);
 
-    const span = h.app.tree_search_ctx.editor.caret.selection() orelse return error.NoSelection;
+    const span = h.app.tree_search_field.editor.caret.selection() orelse return error.NoSelection;
     try testing.expectEqual(@as(usize, 0), span.start);
     try testing.expectEqual(@as(usize, 5), span.end);
-    try testing.expectEqualStrings("users", h.app.tree_search_ctx.editor.text());
+    try testing.expectEqualStrings("users", h.app.tree_search_field.editor.text());
 }
 
 // ---- Clipboard ----
@@ -1239,8 +1238,8 @@ test "Cmd+C on the tree search copies that field, not the SQL editor" {
     try h.typeText("SELECT 1");
     h.app.focus = .tree_search;
     _ = h.app.onText("users");
-    h.app.tree_search_ctx.editor.setCaret(5, false);
-    h.app.tree_search_ctx.editor.setCaret(0, true);
+    h.app.tree_search_field.editor.setCaret(5, false);
+    h.app.tree_search_field.editor.setCaret(0, true);
 
     try testing.expect(h.app.onKey(.{ .super = true }, editor.KEY_C));
     try testing.expectEqualStrings("users", fakeClipboardText());
@@ -1248,7 +1247,7 @@ test "Cmd+C on the tree search copies that field, not the SQL editor" {
     // Paste goes to the same field, and the SQL editor is untouched.
     _ = h.app.onKey(.{}, editor.KEY_END);
     try testing.expect(h.app.onKey(.{ .super = true }, editor.KEY_V));
-    try testing.expectEqualStrings("usersusers", h.app.tree_search_ctx.editor.text());
+    try testing.expectEqualStrings("usersusers", h.app.tree_search_field.editor.text());
     try testing.expectEqualStrings("usersusers", h.app.tree_search);
     try testing.expectEqualStrings("SELECT 1", h.app.ed.text());
 }
@@ -1524,7 +1523,7 @@ test "Tab moves between the path field and the SQL editor" {
     try h.typeThroughHost("SELECT 1");
     try testing.expectEqualStrings("SELECT 1", h.app.ed.text());
     // ...and the path field was left alone.
-    try testing.expectEqual(@as(usize, 0), h.app.picker.field.len);
+    try testing.expectEqual(@as(usize, 0), h.app.picker.field.editor.len);
 
     h.press(editor.KEY_TAB, .{});
     try testing.expectEqual(app_mod.Focus.path, h.app.focus);

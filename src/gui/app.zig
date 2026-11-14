@@ -125,10 +125,10 @@ pub const App = struct {
     /// Stable per-line click contexts; the registry keeps the pointer until the release fires.
     line_clicks: [max_editor_lines]LineClick = undefined,
 
-    // Live field contexts, one per field, so a click can find its model.
-    tree_search_ctx: input_mod.FieldCtx = undefined,
-    filter_ctx: input_mod.FieldCtx = undefined,
-    palette_ctx: input_mod.FieldCtx = undefined,
+    // The live fields: the look, the intents and the draft, one struct each, so a click can find its model.
+    tree_search_field: input_mod.Field = .{},
+    filter_field: input_mod.Field = .{},
+    palette_field: input_mod.Field = .{},
 
     // Tree search.
     tree_search_buf: [64]u8 = undefined,
@@ -187,10 +187,10 @@ pub const App = struct {
         if (glin.frame.focusWasCleared()) self.focus = .sql_editor;
         // One focus, one caret: an unfocused field draws no caret at all, so exactly one of these is ever true.
         self.ed.focused = self.focus == .sql_editor;
-        self.tree_search_ctx.editor.focused = self.focus == .tree_search;
-        self.filter_ctx.editor.focused = self.focus == .row_filter;
-        self.palette_ctx.editor.focused = self.focus == .palette;
-        self.picker.field.focused = self.focus == .path;
+        self.tree_search_field.editor.focused = self.focus == .tree_search;
+        self.filter_field.editor.focused = self.focus == .row_filter;
+        self.palette_field.editor.focused = self.focus == .palette;
+        self.picker.field.editor.focused = self.focus == .path;
         if (self.focus != self.prev_focus) {
             trace.log("frame {d} FOCUS {s} -> {s}", .{ self.frame_no, @tagName(self.prev_focus), @tagName(self.focus) });
             self.prev_focus = self.focus;
@@ -202,15 +202,64 @@ pub const App = struct {
         self.* = .{ .gpa = gpa, .io = io };
         // Bound to `sql_buf` AFTER the struct is in its final place, so the pointer refers to the App the caller actually holds.
         self.ed = editor.Editor.init(&self.sql_buf);
-        // The live fields need a stable context each, so the click callback can find its model.
-        self.tree_search_ctx = .{ .id = "sidebar.search", .measure = measureRun, .on_focus = focusTreeSearch, .focus_ctx = self };
-        self.filter_ctx = .{ .id = "results.filter", .measure = measureRun, .on_focus = focusFilter, .focus_ctx = self };
-        self.palette_ctx = .{ .id = "palette.input", .measure = measureRun, .on_focus = focusPalette, .focus_ctx = self };
-        // A field points its editor at its own buffer on first use; the keyboard handler reads the same editor.
-        self.tree_search_ctx.bind();
-        self.filter_ctx.bind();
-        self.palette_ctx.bind();
-        // Same rule for the picker's own field buffer.
+        // The live fields: their look and their intents are fixed, so a view only declares them.
+        self.tree_search_field = .{
+            .id = .{ .text = "sidebar.search" },
+            .font_size = theme.font_size_small,
+            .fg = theme.text,
+            .bg = theme.bg_editor,
+            .sel_fg = theme.text_bright,
+            .sel_bg = theme.bg_selected,
+            .caret_fg = theme.caret,
+            .h = .{ .fixed = 28 },
+            .pad = glin.props.Pad.axes(4, 8),
+            .border = .{ .width = 1, .color = theme.line },
+            .measure = measureRun,
+            .on_focus = focusTreeSearch,
+            .focus_ctx = self,
+        };
+        self.filter_field = .{
+            .id = .{ .text = "results.filter" },
+            .font_size = theme.font_size_tiny,
+            .fg = theme.text,
+            .bg = theme.bg_editor,
+            .sel_fg = theme.text_bright,
+            .sel_bg = theme.bg_selected,
+            .caret_fg = theme.caret,
+            .w = .{ .fixed = 180 },
+            .h = .{ .fixed = 22 },
+            .pad = glin.props.Pad.axes(2, 8),
+            .border = .{ .width = 1, .color = theme.line },
+            .measure = measureRun,
+            .on_focus = focusFilter,
+            .focus_ctx = self,
+        };
+        self.palette_field = .{
+            .id = .{ .text = "palette.input" },
+            .font_size = theme.font_size,
+            .fg = theme.text_bright,
+            .bg = theme.bg_editor,
+            .sel_fg = theme.text_bright,
+            .sel_bg = theme.bg_selected,
+            .caret_fg = theme.caret,
+            .h = .{ .fixed = 30 },
+            .pad = glin.props.Pad.axes(5, 10),
+            .border = .{ .width = 1, .color = theme.line },
+            .measure = measureRun,
+            .on_focus = focusPalette,
+            .focus_ctx = self,
+        };
+        self.picker.field.font_size = theme.font_size;
+        self.picker.field.fg = theme.text;
+        self.picker.field.bg = theme.bg_editor;
+        self.picker.field.sel_fg = theme.bg_selected;
+        self.picker.field.w = .{ .fixed = 520 };
+        self.picker.field.h = .{ .fixed = 30 };
+        self.picker.field.pad = glin.props.Pad.axes(4, 8);
+        self.picker.field.measure = measureRun;
+        self.picker.field.on_focus = focusPickerField;
+        self.picker.field.focus_ctx = self;
+        // The picker binds its own 512-byte buffer on first use; the keyboard handler reads the same editor.
         self.picker.init();
         self.setStatus("no database open — Ctrl+O to choose one", .{});
     }
@@ -274,7 +323,7 @@ pub const App = struct {
     pub fn openPicker(self: *App) void {
         trace.log("frame {d} PICKER OPEN", .{self.frame_no});
         self.picker.open = true;
-        self.focus = .path;
+        self.focusPath();
 
         // The field starts EMPTY, deliberately.
         self.picker.field.clear();
@@ -332,7 +381,7 @@ pub const App = struct {
     pub fn closePicker(self: *App) void {
         trace.log("frame {d} PICKER CLOSE", .{self.frame_no});
         self.picker.open = false;
-        self.focus = .sql_editor;
+        self.focusOn(.sql_editor);
         if (self.db_open) self.setStatus("ready — {s}", .{self.db_path});
     }
 
@@ -804,8 +853,8 @@ pub const App = struct {
     /// Set the tree's search text.
     pub fn setTreeSearch(self: *App, text: []const u8) void {
         const before = self.tree_search;
-        self.tree_search_ctx.editor.setText(text);
-        self.tree_search = self.tree_search_ctx.editor.text();
+        self.tree_search_field.editor.setText(text);
+        self.tree_search = self.tree_search_field.editor.text();
         if (!std.mem.eql(u8, before, self.tree_search)) {
             trace.log("frame {d} TREE SEARCH \"{s}\" -> \"{s}\"", .{ self.frame_no, before, self.tree_search });
         }
@@ -813,14 +862,14 @@ pub const App = struct {
 
     /// Set the grid's row filter and rebuild the display order.
     pub fn setFilter(self: *App, text: []const u8) void {
-        self.filter_ctx.editor.setText(text);
+        self.filter_field.editor.setText(text);
         self.syncFilter();
     }
 
     /// Re-read the filter from its editor and rebuild the display order.
     pub fn syncFilter(self: *App) void {
         const before = self.filter;
-        self.filter = self.filter_ctx.editor.text();
+        self.filter = self.filter_field.editor.text();
         if (!std.mem.eql(u8, before, self.filter)) {
             trace.log("frame {d} FILTER \"{s}\" -> \"{s}\"", .{ self.frame_no, before, self.filter });
         }
@@ -831,8 +880,8 @@ pub const App = struct {
     /// Set the palette's query text.
     pub fn setPalette(self: *App, text: []const u8) void {
         const before = self.palette;
-        self.palette_ctx.editor.setText(text);
-        self.palette = self.palette_ctx.editor.text();
+        self.palette_field.editor.setText(text);
+        self.palette = self.palette_field.editor.text();
         self.palette_idx = 0;
         if (!std.mem.eql(u8, before, self.palette)) {
             trace.log("frame {d} PALETTE TEXT \"{s}\" -> \"{s}\"", .{ self.frame_no, before, self.palette });
@@ -842,14 +891,14 @@ pub const App = struct {
     pub fn openPalette(self: *App) void {
         trace.log("frame {d} PALETTE OPEN", .{self.frame_no});
         self.palette_open = true;
-        self.focus = .palette;
+        self.focusOn(.palette);
         self.setPalette("");
     }
 
     pub fn closePalette(self: *App) void {
         trace.log("frame {d} PALETTE CLOSE", .{self.frame_no});
         self.palette_open = false;
-        self.focus = .sql_editor;
+        self.focusOn(.sql_editor);
     }
 
     /// How many tables match the palette's query.
@@ -1057,20 +1106,20 @@ pub const App = struct {
                 return true;
             }
             if (self.focus != .sql_editor) {
-                self.focus = .sql_editor;
+                self.focusOn(.sql_editor);
                 return true;
             }
         }
         switch (self.focus) {
-            .tree_search => return self.onFieldKey(&self.tree_search_ctx.editor, keycode, mods, .tree),
-            .row_filter => return self.onFieldKey(&self.filter_ctx.editor, keycode, mods, .filter),
-            .palette => return self.onFieldKey(&self.palette_ctx.editor, keycode, mods, .palette),
+            .tree_search => return self.onFieldKey(&self.tree_search_field.editor, keycode, mods, .tree),
+            .row_filter => return self.onFieldKey(&self.filter_field.editor, keycode, mods, .filter),
+            .palette => return self.onFieldKey(&self.palette_field.editor, keycode, mods, .palette),
             .path => return self.onPathKey(mods, keycode),
             .sql_editor => {},
         }
         // The picker is open but the editor has the keyboard: Tab is how the user gets to the path field without reaching for the mouse.
         if (self.picker.open and keycode == editor.KEY_TAB) {
-            self.focus = .path;
+            self.focusPath();
             return true;
         }
         return self.onEditorKey(mods, keycode);
@@ -1080,10 +1129,10 @@ pub const App = struct {
     pub fn onText(self: *App, text: []const u8) bool {
         if (text.len == 0) return false;
         switch (self.focus) {
-            .tree_search => return self.onFieldText(&self.tree_search_ctx.editor, text, .tree),
-            .row_filter => return self.onFieldText(&self.filter_ctx.editor, text, .filter),
-            .palette => return self.onFieldText(&self.palette_ctx.editor, text, .palette),
-            .path => return switch (editor.handleText(&self.picker.field, text)) {
+            .tree_search => return self.onFieldText(&self.tree_search_field.editor, text, .tree),
+            .row_filter => return self.onFieldText(&self.filter_field.editor, text, .filter),
+            .palette => return self.onFieldText(&self.palette_field.editor, text, .palette),
+            .path => return switch (editor.handleText(&self.picker.field.editor, text)) {
                 .edited, .run_requested => true,
                 .ignored => false,
             },
@@ -1115,10 +1164,10 @@ pub const App = struct {
     /// The editor the keyboard is currently typing into.
     fn focusedEditor(self: *App) *text_editor.Editor {
         return switch (self.focus) {
-            .tree_search => &self.tree_search_ctx.editor,
-            .row_filter => &self.filter_ctx.editor,
-            .palette => &self.palette_ctx.editor,
-            .path => &self.picker.field,
+            .tree_search => &self.tree_search_field.editor,
+            .row_filter => &self.filter_field.editor,
+            .palette => &self.palette_field.editor,
+            .path => &self.picker.field.editor,
             .sql_editor => &self.ed,
         };
     }
@@ -1153,29 +1202,50 @@ pub const App = struct {
     /// Mirror the focused field back into the app's own copies after an edit that did not go through `onFieldKey`.
     fn syncFocused(self: *App) void {
         switch (self.focus) {
-            .tree_search => self.tree_search = self.tree_search_ctx.editor.text(),
+            .tree_search => self.tree_search = self.tree_search_field.editor.text(),
             .row_filter => self.syncFilter(),
             .palette => {
-                self.palette = self.palette_ctx.editor.text();
+                self.palette = self.palette_field.editor.text();
                 self.palette_idx = 0;
             },
             .path, .sql_editor => {},
         }
     }
 
+    fn focusPickerField(ctx: ?*anyopaque) void {
+        const self: *App = @ptrCast(@alignCast(ctx.?));
+        self.focusPath();
+    }
+
+    /// Give the keyboard to one place, in the app AND in the engine: the caret and the typing must agree.
+    fn focusOn(self: *App, f: Focus) void {
+        self.focus = f;
+        glin.frame.setFocus(switch (f) {
+            .tree_search => "sidebar.search",
+            .row_filter => "results.filter",
+            .palette => "palette.input",
+            .path => "picker.path",
+            .sql_editor => null,
+        });
+    }
+
+    fn focusPath(self: *App) void {
+        self.focusOn(.path);
+    }
+
     fn focusTreeSearch(ctx: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(ctx.?));
-        self.focus = .tree_search;
+        self.focusOn(.tree_search);
     }
 
     fn focusFilter(ctx: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(ctx.?));
-        self.focus = .row_filter;
+        self.focusOn(.row_filter);
     }
 
     fn focusPalette(ctx: ?*anyopaque) void {
         const self: *App = @ptrCast(@alignCast(ctx.?));
-        self.focus = .palette;
+        self.focusOn(.palette);
     }
 
     /// Which small field a key is going to.
@@ -1223,7 +1293,7 @@ pub const App = struct {
                 return true;
             },
             editor.KEY_TAB => {
-                self.focus = .sql_editor;
+                self.focusOn(.sql_editor);
                 return true;
             },
             editor.KEY_UP => {
@@ -1237,7 +1307,7 @@ pub const App = struct {
             else => {},
         }
         // Everything else — typing, Backspace, Home/End, selection — is exactly what the SQL editor does, so it is literally the same handler and the same.
-        return switch (editor.handleKey(&self.picker.field, keycode, mods.shift, mods.shortcut())) {
+        return switch (editor.handleKey(&self.picker.field.editor, keycode, mods.shift, mods.shortcut())) {
             .run_requested, .edited => true,
             .ignored => false,
         };

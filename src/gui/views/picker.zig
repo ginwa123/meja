@@ -77,19 +77,7 @@ pub fn pickerHeadChildren(self: *App) void {
 }
 
 pub fn pickerBarChildren(self: *App) void {
-    input_mod.fieldEdit(.{
-        .id = .{ .text = "picker.path" },
-        .font_size = theme.font_size,
-        .fg = theme.text,
-        .bg = theme.bg_editor,
-        .sel_fg = theme.bg_selected,
-        .w = .{ .fixed = 520 },
-        .h = .{ .fixed = 30 },
-        .pad = props.Pad.axes(4, 8),
-    }, self.picker.field.text(), .{
-        .caret = @min(self.picker.field.caret.offset, self.picker.field.len),
-        .anchor = self.picker.field.caret.anchor,
-    });
+    input_mod.TextField(&self.picker.field);
 
     button.button(.{
         .id = .{ .text = "picker.open" },
@@ -138,7 +126,7 @@ pub fn pickerRow(app: *App, index: usize) void {
         .radius = props.Radius.all(3),
     }, ctx, pickerRowChildren);
 
-    registry.registerZCursor(ui.zclay.getElementId(id), onPickerRowClick, app, index, 0, .pointer);
+    registry.registerZCursor(ui.frame.clayId(id), onPickerRowClick, app, index, 0, .pointer);
 }
 
 pub fn pickerRowChildren(ctx: PickerRowCtx) void {
