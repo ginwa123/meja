@@ -132,12 +132,56 @@ pub fn main(init: std.process.Init) !void {
         .focus = .sql_editor,
     });
 
+    // Everything that differs between the caret lit and the caret dark, anywhere on the surface: if the blink is
+    // visible somewhere other than the caret, this is where it shows.
+    failures += try reportLitDarkDiff(w, &driver, &app);
+
     std.debug.print("{s}", .{out.written()});
     if (failures != 0) {
         std.debug.print("VERIFY: {d} check(s) failed\n", .{failures});
         return error.VerifyFailed;
     }
     std.debug.print("VERIFY: all checks passed\n", .{});
+}
+
+/// Render the app with the editor caret lit and dark, and report every pixel that differs.
+fn reportLitDarkDiff(w: *std.Io.Writer, driver: *Driver, app: *app_mod.App) !usize {
+    const gpa = driver.alloc;
+    app.focus = .sql_editor;
+    app.ed.idle = 0;
+    driver.frame();
+    const lit_surface = ui.software_render.currentSurface() orelse return 0;
+    const lit = try gpa.dupe(u8, lit_surface.pixels);
+    defer gpa.free(lit);
+    const width = lit_surface.width;
+    const height = lit_surface.height;
+
+    app.ed.idle = 0.6;
+    driver.frame();
+    const dark = ui.software_render.currentSurface() orelse return 0;
+
+    var min_x: usize = width;
+    var max_x: usize = 0;
+    var min_y: usize = height;
+    var max_y: usize = 0;
+    var count: usize = 0;
+    var y: usize = 0;
+    while (y < height) : (y += 1) {
+        var x: usize = 0;
+        while (x < width) : (x += 1) {
+            const i = (y * width + x) * 4;
+            if (lit[i] == dark.pixels[i] and lit[i + 1] == dark.pixels[i + 1] and lit[i + 2] == dark.pixels[i + 2]) continue;
+            count += 1;
+            if (x < min_x) min_x = x;
+            if (x > max_x) max_x = x;
+            if (y < min_y) min_y = y;
+            if (y > max_y) max_y = y;
+        }
+    }
+    try w.print("\nLIT vs DARK: {d} px differ, bbox x {d}..{d} y {d}..{d} (surface {d}x{d})\n", .{
+        count, min_x, max_x, min_y, max_y, width, height,
+    });
+    return 0;
 }
 
 const Case = struct {
