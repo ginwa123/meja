@@ -27,6 +27,9 @@ fn measureRun(bytes: []const u8, font_size: u16) f32 {
 /// Largest clipboard run this app will move: a SQL editor buffer, not a document.
 const clipboard_max: usize = 64 * 1024;
 
+/// Rows the grid asks for first. Scrolling past the bottom grows it; a new statement starts here again.
+pub const base_rows: usize = 200;
+
 /// Deepest editor line that gets its own click target.
 pub const max_editor_lines: usize = 512;
 
@@ -137,9 +140,11 @@ pub const App = struct {
     filter: []const u8 = "",
     page: usize = 0,
     /// How many rows the query asks for. Grows as the grid is scrolled, which is what makes the grid lazy instead of paged.
-    loaded_rows: usize = 200,
+    loaded_rows: usize = base_rows,
     /// Set when the grid reached the bottom and wants more; consumed at the top of the next frame.
     pending_load: bool = false,
+    /// True while a re-run is fetching more rows for the SAME statement, which is the only case that keeps the bigger row budget.
+    loading_more: bool = false,
     /// Decides when the grid has scrolled into the bottom zone and needs another chunk. The toolkit owns the rule.
     loader: glin.table.Loader = .{},
     sort_col: ?usize = null,
@@ -422,6 +427,8 @@ pub const App = struct {
 
     /// Run whatever is in the editor.
     pub fn runEditor(self: *App) void {
+        // A new statement starts at the base row budget. Without this, browsing one big table leaves every later query asking for thousands of rows.
+        if (!self.loading_more) self.loaded_rows = base_rows;
         if (!self.db_open) {
             self.setStatus("no database open — Ctrl+O to choose one", .{});
             return;
@@ -868,6 +875,8 @@ pub const App = struct {
     pub fn applyPendingLoad(self: *App) void {
         if (!self.pending_load) return;
         self.pending_load = false;
+        self.loading_more = true;
+        defer self.loading_more = false;
         self.runEditor();
         // The rows are in, so the next entry into the bottom zone may ask again.
         self.loader.arrived();

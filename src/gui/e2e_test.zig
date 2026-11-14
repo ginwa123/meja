@@ -749,6 +749,36 @@ fn fieldCaret(field_id: []const u8) bool {
     return ui.zclay.getElementData(ui.zclay.ElementId.IDI(field_id, 2)).found;
 }
 
+test "a new statement starts at the base row budget again" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try h.app.db.exec(h.app.gpa, "CREATE TABLE big (id INTEGER PRIMARY KEY, name TEXT)", &.{});
+    for (0..600) |i| {
+        var buf: [96]u8 = undefined;
+        const q = try std.fmt.bufPrint(&buf, "INSERT INTO big (id, name) VALUES ({d}, 'row {d}')", .{ i, i });
+        try h.app.db.exec(h.app.gpa, q, &.{});
+    }
+    h.installKeys();
+    try h.typeText("SELECT * FROM big");
+    h.run();
+    h.frame();
+
+    // Browsing the table grows the budget to two chunks.
+    var step: usize = 0;
+    while (step < 40) : (step += 1) {
+        ui.components.scroll.scrollBy("grid.scroll", 0, 120);
+        h.driver.frame();
+    }
+    try testing.expectEqual(@as(usize, 400), h.app.loaded_rows);
+
+    // Running a DIFFERENT statement must not inherit it: a small table would otherwise ask for four hundred rows for nothing.
+    h.app.ed.setText("SELECT * FROM big WHERE id < 3");
+    h.run();
+    h.frame();
+    try testing.expectEqual(app_mod.base_rows, h.app.loaded_rows);
+}
+
 test "scrolling into the bottom asks for one chunk, not one per frame of the gesture" {
     const gpa = std.heap.page_allocator;
     var h = try Harness.init(gpa);
