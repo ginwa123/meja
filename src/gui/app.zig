@@ -216,7 +216,7 @@ pub const App = struct {
             .border = .{ .width = 1, .color = theme.line },
             .measure = measureRun,
             .on_focus = focusTreeSearch,
-            .focus_ctx = self,
+            .ctx = self,
         };
         self.filter_field = .{
             .id = .{ .text = "results.filter" },
@@ -232,7 +232,7 @@ pub const App = struct {
             .border = .{ .width = 1, .color = theme.line },
             .measure = measureRun,
             .on_focus = focusFilter,
-            .focus_ctx = self,
+            .ctx = self,
         };
         self.palette_field = .{
             .id = .{ .text = "palette.input" },
@@ -247,7 +247,7 @@ pub const App = struct {
             .border = .{ .width = 1, .color = theme.line },
             .measure = measureRun,
             .on_focus = focusPalette,
-            .focus_ctx = self,
+            .ctx = self,
         };
         self.picker.field.font_size = theme.font_size;
         self.picker.field.fg = theme.text;
@@ -258,7 +258,7 @@ pub const App = struct {
         self.picker.field.pad = glin.props.Pad.axes(4, 8);
         self.picker.field.measure = measureRun;
         self.picker.field.on_focus = focusPickerField;
-        self.picker.field.focus_ctx = self;
+        self.picker.field.ctx = self;
         // The picker binds its own 512-byte buffer on first use; the keyboard handler reads the same editor.
         self.picker.init();
         self.setStatus("no database open — Ctrl+O to choose one", .{});
