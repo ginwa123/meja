@@ -65,8 +65,7 @@ pub fn editorBarChildren(self: *App) void {
         .h = .{ .fixed = theme.control_sm_h },
         .radius = props.Radius.all(theme.r_control),
         .pad = props.Pad.axes(0, theme.control_sm_pad_x),
-        .on_click = onRunClick,
-        .ctx = self,
+        .on_click = .{ .f = onRunClick, .ctx = self },
     });
 }
 

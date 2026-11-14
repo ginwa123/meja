@@ -216,8 +216,7 @@ pub const App = struct {
             .border = .{ .width = 1, .color = theme.edge },
             .radius = glin.props.Radius.all(theme.r_control),
             .measure = measureRun,
-            .on_focus = focusTreeSearch,
-            .ctx = self,
+            .on_focus = .{ .f = focusTreeSearch, .ctx = self },
         };
         self.filter_field = .{
             .id = .{ .text = "results.filter" },
@@ -233,8 +232,7 @@ pub const App = struct {
             .border = .{ .width = 1, .color = theme.edge },
             .radius = glin.props.Radius.all(theme.r_control),
             .measure = measureRun,
-            .on_focus = focusFilter,
-            .ctx = self,
+            .on_focus = .{ .f = focusFilter, .ctx = self },
         };
         self.palette_field = .{
             .id = .{ .text = "palette.input" },
@@ -249,8 +247,7 @@ pub const App = struct {
             .border = .{ .width = 1, .color = theme.edge },
             .radius = glin.props.Radius.all(theme.r_control),
             .measure = measureRun,
-            .on_focus = focusPalette,
-            .ctx = self,
+            .on_focus = .{ .f = focusPalette, .ctx = self },
         };
         self.picker.field.font_size = theme.font_size;
         self.picker.field.fg = theme.text;
@@ -262,8 +259,7 @@ pub const App = struct {
         self.picker.field.border = .{ .width = 1, .color = theme.edge };
         self.picker.field.radius = glin.props.Radius.all(theme.r_control);
         self.picker.field.measure = measureRun;
-        self.picker.field.on_focus = focusPickerField;
-        self.picker.field.ctx = self;
+        self.picker.field.on_focus = .{ .f = focusPickerField, .ctx = self };
         // The picker binds its own 512-byte buffer on first use; the keyboard handler reads the same editor.
         self.picker.init();
         self.setStatus("no database open — Ctrl+O to choose one", .{});

@@ -30,7 +30,7 @@ pub fn paletteBand(self: *App) void {
 }
 
 pub fn paletteBandChildren(self: *App) void {
-    input_mod.TextField(&self.palette_field);
+    input_mod.textField(&self.palette_field);
 
     const matches = self.paletteMatchCount();
     if (matches == 0) {

@@ -43,8 +43,7 @@ pub fn topBarChildren(self: *App) void {
         .radius = props.Radius.all(theme.r_control),
         .border = .{ .width = 1, .color = theme.line },
         .pad = props.Pad.axes(0, theme.field_pad_x),
-        .on_click = onPaletteClick,
-        .ctx = self,
+        .on_click = .{ .f = onPaletteClick, .ctx = self },
     });
 }
 

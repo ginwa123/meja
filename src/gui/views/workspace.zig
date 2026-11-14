@@ -57,9 +57,8 @@ pub fn tabBar(self: *App) void {
         .fg = theme.text_dim,
         .active_fg = theme.text_bright,
         .close_fg = theme.text_faint,
-        .on_select = onTabSelect,
-        .on_close = onTabClose,
-        .ctx = self,
+        .on_select = .{ .f = onTabSelect, .ctx = self },
+        .on_close = .{ .f = onTabClose, .ctx = self },
     });
 }
 
@@ -128,7 +127,7 @@ pub fn resultsStats(self: *App) void {
 }
 
 pub fn filterField(self: *App) void {
-    input_mod.TextField(&self.filter_field);
+    input_mod.textField(&self.filter_field);
 }
 
 fn onTabSelect(ctx: ?*anyopaque, index: usize) void {

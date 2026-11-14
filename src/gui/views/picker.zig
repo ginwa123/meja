@@ -77,7 +77,7 @@ pub fn pickerHeadChildren(self: *App) void {
 }
 
 pub fn pickerBarChildren(self: *App) void {
-    input_mod.TextField(&self.picker.field);
+    input_mod.textField(&self.picker.field);
 
     button.button(.{
         .id = .{ .text = "picker.open" },
@@ -87,8 +87,7 @@ pub fn pickerBarChildren(self: *App) void {
         .h = .{ .fixed = theme.control_h },
         .radius = props.Radius.all(theme.r_control),
         .pad = props.Pad.axes(0, theme.control_pad_x),
-        .on_click = onOpenButtonClick,
-        .ctx = self,
+        .on_click = .{ .f = onOpenButtonClick, .ctx = self },
     });
     button.button(.{
         .id = .{ .text = "picker.browse" },
@@ -98,8 +97,7 @@ pub fn pickerBarChildren(self: *App) void {
         .h = .{ .fixed = theme.control_h },
         .radius = props.Radius.all(theme.r_control),
         .pad = props.Pad.axes(0, theme.control_pad_x),
-        .on_click = onPickerBrowseClick,
-        .ctx = self,
+        .on_click = .{ .f = onPickerBrowseClick, .ctx = self },
     });
     button.button(.{
         .id = .{ .text = "picker.cancel" },
@@ -108,8 +106,7 @@ pub fn pickerBarChildren(self: *App) void {
         .h = .{ .fixed = theme.control_h },
         .radius = props.Radius.all(theme.r_control),
         .pad = props.Pad.axes(0, theme.control_pad_x),
-        .on_click = onCancelButtonClick,
-        .ctx = self,
+        .on_click = .{ .f = onCancelButtonClick, .ctx = self },
     });
 }
 

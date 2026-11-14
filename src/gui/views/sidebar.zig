@@ -44,7 +44,7 @@ pub fn sidebarChildren(self: *App) void {
 }
 
 pub fn treeSearchField(self: *App) void {
-    input_mod.TextField(&self.tree_search_field);
+    input_mod.textField(&self.tree_search_field);
 }
 
 pub fn sidebarTree(self: *App) void {
@@ -64,8 +64,7 @@ pub fn sidebarTree(self: *App) void {
         .caret_fg = theme.text_faint,
         // Selection is a fill AND a 2px bar: colour is never the only cue.
         .selected_bar = theme.accent,
-        .on_select = onTreeRowClick,
-        .ctx = self,
+        .on_select = .{ .f = onTreeRowClick, .ctx = self },
     });
 }
 
@@ -89,8 +88,7 @@ pub fn sidebarFooterChildren(self: *App) void {
         .h = .{ .fixed = theme.control_sm_h },
         .radius = props.Radius.all(theme.r_control),
         .pad = props.Pad.axes(0, theme.control_sm_pad_x),
-        .on_click = onSidebarOpenClick,
-        .ctx = self,
+        .on_click = .{ .f = onSidebarOpenClick, .ctx = self },
     });
     button.button(.{
         .id = .{ .text = "sidebar.browse" },
@@ -101,8 +99,7 @@ pub fn sidebarFooterChildren(self: *App) void {
         .h = .{ .fixed = theme.control_sm_h },
         .radius = props.Radius.all(theme.r_control),
         .pad = props.Pad.axes(0, theme.control_sm_pad_x),
-        .on_click = onSidebarBrowseClick,
-        .ctx = self,
+        .on_click = .{ .f = onSidebarBrowseClick, .ctx = self },
     });
     button.button(.{
         .id = .{ .text = "sidebar.newquery" },
@@ -113,8 +110,7 @@ pub fn sidebarFooterChildren(self: *App) void {
         .h = .{ .fixed = theme.control_sm_h },
         .radius = props.Radius.all(theme.r_control),
         .pad = props.Pad.axes(0, theme.control_sm_pad_x),
-        .on_click = onNewQueryClick,
-        .ctx = self,
+        .on_click = .{ .f = onNewQueryClick, .ctx = self },
     });
 }
 
