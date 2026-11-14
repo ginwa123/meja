@@ -140,8 +140,8 @@ pub const App = struct {
     loaded_rows: usize = 200,
     /// Set when the grid reached the bottom and wants more; consumed at the top of the next frame.
     pending_load: bool = false,
-    /// The scroll offset the last load was requested at, so one bottom does not fire a load every frame.
-    last_load_scroll: f32 = 0,
+    /// Decides when the grid has scrolled into the bottom zone and needs another chunk. The toolkit owns the rule.
+    loader: glin.table.Loader = .{},
     sort_col: ?usize = null,
     sort_dir: i8 = 0,
     /// Display order: result row indices after the filter and the sort.
@@ -860,9 +860,6 @@ pub const App = struct {
     /// Ask for another chunk of rows. The re-run happens at the top of the next frame, so a frame never changes the result set it is drawing.
     pub fn loadMore(self: *App) void {
         if (!self.has_result or !self.result.truncated) return;
-        if (self.pending_load) return;
-        // Only when everything already asked for has arrived. A trackpad moves the scroll position every frame, so without this the grid sat at the bottom and re-ran the query on every one of them.
-        if (self.row_order.items.len < self.loaded_rows) return;
         self.loaded_rows += 200;
         self.pending_load = true;
     }
@@ -872,6 +869,8 @@ pub const App = struct {
         if (!self.pending_load) return;
         self.pending_load = false;
         self.runEditor();
+        // The rows are in, so the next entry into the bottom zone may ask again.
+        self.loader.arrived();
     }
 
     /// Recompute the display order from the filter and the sort.

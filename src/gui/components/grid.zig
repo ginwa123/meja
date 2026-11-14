@@ -110,12 +110,9 @@ pub fn maybeLoadMore(self: *App) void {
     const view = data.scroll_container_dimensions.h;
     const content = data.content_dimensions.h;
     if (content <= view) return;
-    // Clay's scroll position is negative going down.
-    const scrolled = -data.scroll_position.y;
-    if (scrolled + view < content - 40) return;
-    // One load per bottom: without this the viewport stays "near the bottom" after the content grows, so every frame re-ran the query and the table flickered.
-    if (scrolled <= self.last_load_scroll + 1) return;
-    self.last_load_scroll = scrolled;
+    // Clay's scroll position is negative going down; the toolkit's loader is edge-triggered, so one gesture asks once.
+    const scrolled = @max(-data.scroll_position.y, 0);
+    if (!self.loader.wantsMore(scrolled, view, content, 40)) return;
     self.loadMore();
 }
 

@@ -749,6 +749,33 @@ fn fieldCaret(field_id: []const u8) bool {
     return ui.zclay.getElementData(ui.zclay.ElementId.IDI(field_id, 2)).found;
 }
 
+test "scrolling into the bottom asks for one chunk, not one per frame of the gesture" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try h.app.db.exec(h.app.gpa, "CREATE TABLE big (id INTEGER PRIMARY KEY, name TEXT)", &.{});
+    for (0..600) |i| {
+        var buf: [96]u8 = undefined;
+        const q = try std.fmt.bufPrint(&buf, "INSERT INTO big (id, name) VALUES ({d}, 'row {d}')", .{ i, i });
+        try h.app.db.exec(h.app.gpa, q, &.{});
+    }
+    h.installKeys();
+    try h.typeText("SELECT * FROM big");
+    h.run();
+    h.frame();
+    try testing.expectEqual(@as(usize, 200), h.app.loaded_rows);
+
+    // A gesture moves the offset every frame: entering the bottom zone may ask ONCE, and staying in it may not ask again.
+    var step: usize = 0;
+    while (step < 40) : (step += 1) {
+        ui.components.scroll.scrollBy("grid.scroll", 0, 120);
+        h.driver.frame();
+    }
+    try testing.expectEqual(@as(usize, 400), h.app.loaded_rows);
+    try testing.expectEqual(@as(usize, 400), h.app.row_order.items.len);
+    try testing.expect(!h.app.pending_load);
+}
+
 // ---- Frame stability ----
 
 // What one rendered frame looked like, per command: a digest, the element id and the box.
