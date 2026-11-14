@@ -1,4 +1,4 @@
-//! End-to-end tests for the GUI: type a query, run it, see the output.
+// End-to-end tests for the GUI: type a query, run it, see the output.
 
 const std = @import("std");
 const ui = @import("glinlandui");
@@ -16,7 +16,7 @@ const glin_input = ui.components.input;
 
 const testing = std.testing;
 
-/// A real app on a real in-memory database, torn down at the end.
+// A real app on a real in-memory database, torn down at the end.
 const Harness = struct {
     threaded: std.Io.Threaded,
     app: *App,
@@ -56,7 +56,7 @@ const Harness = struct {
         self.threaded.deinit();
     }
 
-    /// The app's own draw callback, so the Driver renders the REAL UI rather than a stand-in.
+    // The app's own draw callback, so the Driver renders the REAL UI rather than a stand-in.
     fn installKeys(self: *Harness) void {
         self.driver.host.keys.register(struct {
             fn f(ctx: ?*anyopaque, mods: glin_input.Mods, keycode: u32) bool {
@@ -67,14 +67,14 @@ const Harness = struct {
         }.f, self.app);
     }
 
-    /// Draw a frame and let the renderer settle.
+    // Draw a frame and let the renderer settle.
     fn frame(self: *Harness) void {
         self.driver.waitForIdle() catch {
             self.driver.frame();
         };
     }
 
-    /// Type a string one key at a time through the real key handler.
+    // Type a string one key at a time through the real key handler.
     fn typeText(self: *Harness, text: []const u8) !void {
         for (text) |c| {
             const stroke = editor.keyCodeFor(c) orelse {
@@ -85,12 +85,12 @@ const Harness = struct {
         }
     }
 
-    /// Press Ctrl+Enter: the run gesture.
+    // Press Ctrl+Enter: the run gesture.
     fn run(self: *Harness) void {
         _ = self.app.onKey(.{ .ctrl = true }, editor.KEY_ENTER);
     }
 
-    /// Press a key through the real host keychain.
+    // Press a key through the real host keychain.
     fn press(self: *Harness, keycode: u32, mods: glin_input.Mods) void {
         // Mods are a LATCH, not an argument: glinlandui's `Mods.track` consumes the Shift/Ctrl key events themselves and the handler then reads the latched.
         if (mods.ctrl) _ = h_key(self, editor.KEY_LEFTCTRL);
@@ -108,7 +108,7 @@ const Harness = struct {
         return self.driver.host.onKeyEvent(keycode, false);
     }
 
-    /// Assert the editor's line `line` reached the frame, byte for byte.
+    // Assert the editor's line `line` reached the frame, byte for byte.
     fn expectEditorDrawn(self: *Harness, line: usize) !void {
         const ed = &self.app.ed;
         const start = ed.lineStartAt(line);
@@ -120,7 +120,7 @@ const Harness = struct {
         try self.driver.expectText(expected);
     }
 
-    /// Assert some drawn text CONTAINS `needle`.
+    // Assert some drawn text CONTAINS `needle`.
     fn expectTextContaining(self: *Harness, needle: []const u8) !void {
         const count = self.driver.snapshot().text_count;
         for (0..count) |i| {
@@ -131,7 +131,7 @@ const Harness = struct {
         return error.TextNotFound;
     }
 
-    /// Type into whatever field currently has focus, through the chain.
+    // Type into whatever field currently has focus, through the chain.
     fn typeThroughHost(self: *Harness, text: []const u8) !void {
         for (text) |c| {
             const stroke = editor.keyCodeFor(c) orelse {
@@ -142,7 +142,7 @@ const Harness = struct {
         }
     }
 
-    /// Script what the system file dialog will answer with.
+    // Script what the system file dialog will answer with.
     fn scriptDialog(self: *Harness, fake: *ui.file_dialog.fake.Fake, answer: ui.file_dialog.fake.Answer) void {
         _ = self;
         fake.* = .{ .answer = answer };
@@ -150,7 +150,7 @@ const Harness = struct {
     }
 };
 
-/// Seed a table the tests query against.
+// Seed a table the tests query against.
 fn seed(app: *App) !void {
     try app.db.exec(app.gpa,
         \\CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT, score REAL)
@@ -716,12 +716,82 @@ test "the caret is a box at the caret column, not a glyph inside the text" {
     try h.driver.expectText("SELECT 1");
 }
 
-// ---- Layout structure ----
-//
-// These are the invariants a screenshot review is for, written down: regions stack, they do not overlap, and each one
-// is where the theme says it is. They are font-independent, so they hold on any machine.
+// ---- Frame stability ----
 
-/// The box of a stable element id, or a test failure naming it.
+// What one rendered frame looked like, per command: a digest, the element id and the box.
+const FrameShape = struct {
+    digest: u64 = 0,
+    digests: [4096]u64 = undefined,
+    ids: [4096]u32 = undefined,
+    boxes: [4096][4]f32 = undefined,
+    n: usize = 0,
+};
+
+var shape_slot: ?*FrameShape = null;
+
+fn probeShape(_: ?*anyopaque, commands: []const ui.zclay.RenderCommand, w: u32, h: u32) void {
+    _ = w;
+    _ = h;
+    const slot: *FrameShape = @ptrCast(@alignCast(shape_slot.?));
+    slot.digest = ui.frame.hashCommands(@constCast(commands));
+    slot.n = 0;
+    for (commands) |cmd| {
+        if (slot.n >= slot.digests.len) break;
+        slot.digests[slot.n] = ui.frame.hashCommands(@constCast(commands[slot.n .. slot.n + 1]));
+        slot.ids[slot.n] = cmd.id;
+        slot.boxes[slot.n] = .{ cmd.bounding_box.x, cmd.bounding_box.y, cmd.bounding_box.width, cmd.bounding_box.height };
+        slot.n += 1;
+    }
+}
+
+test "an idle app renders the same frame twice (nothing in the list oscillates)" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    h.installKeys();
+    try h.typeText("SELECT * FROM users");
+    h.run();
+    h.frame();
+
+    var shapes: [3]FrameShape = .{ .{}, .{}, .{} };
+    var digests: [3]u64 = undefined;
+    for (0..3) |i| {
+        // Pin every caret clock, so the only thing that can differ is the list itself.
+        h.app.ed.idle = 0;
+        h.app.tree_search_ed.idle = 0;
+        h.app.filter_ed.idle = 0;
+        h.app.palette_ed.idle = 0;
+        var opts: ui.frame.FrameOptions = .{ .probe = probeShape };
+        shape_slot = &shapes[i];
+        _ = h.driver.host.frameWithOptions(1200, 800, &opts);
+        digests[i] = shapes[i].digest;
+    }
+
+    if (digests[0] != digests[1] or digests[1] != digests[2]) {
+        std.debug.print("FRAME DIGESTS DIFFER: {x} {x} {x}\n", .{ digests[0], digests[1], digests[2] });
+        var shown: usize = 0;
+        const n = @min(shapes[0].n, shapes[2].n);
+        var i: usize = 0;
+        while (i < n and shown < 8) : (i += 1) {
+            if (shapes[0].digests[i] == shapes[2].digests[i]) continue;
+            std.debug.print("  cmd {d} id={d} box0={any} box2={any}\n", .{
+                i, shapes[2].ids[i], shapes[0].boxes[i], shapes[2].boxes[i],
+            });
+            shown += 1;
+        }
+        if (shapes[0].n != shapes[2].n) {
+            std.debug.print("  command count {d} vs {d}\n", .{ shapes[0].n, shapes[2].n });
+        }
+    }
+    try testing.expectEqual(digests[0], digests[2]);
+}
+
+// ---- Layout structure ---- These are the invariants a screenshot review is for, written down: regions stack, they do not overlap, and each one is
+
+// where the theme says it is. They are font-independent, so they hold on any machine.
+
+// The box of a stable element id, or a test failure naming it.
 fn boxOf(h: *Harness, id: []const u8) !ui.zclay.BoundingBox {
     return h.driver.box(id) orelse {
         std.debug.print("no element with id '{s}' in the frame\n", .{id});
@@ -729,12 +799,12 @@ fn boxOf(h: *Harness, id: []const u8) !ui.zclay.BoundingBox {
     };
 }
 
-/// The bottom edge of a box.
+// The bottom edge of a box.
 fn bottom(b: ui.zclay.BoundingBox) f32 {
     return b.y + b.height;
 }
 
-/// The right edge of a box.
+// The right edge of a box.
 fn right(b: ui.zclay.BoundingBox) f32 {
     return b.x + b.width;
 }
@@ -999,7 +1069,7 @@ test "Cmd+C on the tree search copies that field, not the SQL editor" {
 
 // Choosing a database
 
-/// A directory under the build cache with real database files in it.
+// A directory under the build cache with real database files in it.
 const DbDir = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -1024,7 +1094,7 @@ const DbDir = struct {
         return std.fmt.allocPrint(self.gpa, "{s}/{s}", .{ self.path, name });
     }
 
-    /// Write a real SQLite database, with a `users` table, to `name`.
+    // Write a real SQLite database, with a `users` table, to `name`.
     fn writeDb(self: *const DbDir, name: []const u8) !void {
         const handle = try std.Io.Dir.cwd().openDir(
             self.io,

@@ -1,10 +1,10 @@
-//! Render the real app with the REAL font and check the caret against the pixels.
-//!
-//! The unit tests use the portable text backend, whose "font" is `len * size * 0.6` — so a caret placed from a
-//! guessed cell width passes every test and still lands on a glyph in the window, because the guess WAS the stub.
-//! This renders through the real rasteriser twice, once with the caret lit and once with it dark, and compares the
-//! two frames: the columns that only the lit frame has are the caret, and any ink already there in the dark frame is
-//! the caret sitting on a character.
+// Render the real app with the REAL font and check the caret against the pixels. The unit tests use the portable text backend, whose "font" is `len *
+
+// size * 0.6` — so a caret placed from a guessed cell width passes every test and still lands on a glyph in the window, because the guess WAS the stub.
+
+// This renders through the real rasteriser twice, once with the caret lit and once with it dark, and compares the two frames: the columns that only the
+
+// lit frame has are the caret, and any ink already there in the dark frame is the caret sitting on a character.
 
 const std = @import("std");
 const ui = @import("glinlandui");
@@ -14,15 +14,15 @@ const app_mod = @import("app.zig");
 const main_mod = @import("main.zig");
 const theme = @import("theme.zig");
 
-/// How far a pixel must be from the background before it counts as ink.
+// How far a pixel must be from the background before it counts as ink.
 const ink_threshold: i32 = 12;
 
-/// The channels of a packed 0xAARRGGBB colour.
+// The channels of a packed 0xAARRGGBB colour.
 fn rgbOf(c: ui.Color) [3]u8 {
     return .{ @truncate((c.value >> 16) & 0xFF), @truncate((c.value >> 8) & 0xFF), @truncate(c.value & 0xFF) };
 }
 
-/// One rendered frame, cropped to a rectangle of interest.
+// One rendered frame, cropped to a rectangle of interest.
 const Band = struct {
     pixels: []const u8,
     width: u32,
@@ -52,7 +52,7 @@ const Band = struct {
     }
 };
 
-/// A copy of one frame's pixels: the surface is reused every frame, so the two frames must not share it.
+// A copy of one frame's pixels: the surface is reused every frame, so the two frames must not share it.
 fn pixelAt(b: Band, x: u32, y: u32) [3]u8 {
     const i = (y * b.width + x) * 4;
     return .{ b.pixels[i], b.pixels[i + 1], b.pixels[i + 2] };
@@ -106,8 +106,7 @@ pub fn main(init: std.process.Init) !void {
     var driver = try Driver.initOwned(gpa, &app, main_mod.App_root);
     defer driver.deinit();
     try driver.start(.{ .width = 1200, .height = 800 });
-    // The window renders at the display's backing scale, so the check must too: 1x hides the antialiasing that a
-    // Retina screen shows.
+    // The window renders at the display's backing scale, so the check must too: 1x hides the antialiasing that a Retina screen shows.
     ui.software_render.setRenderScale(2);
     ui.frame.setPixelScale(2);
 
@@ -149,7 +148,7 @@ const Case = struct {
     focus: app_mod.Focus,
 };
 
-/// Render the case with the caret lit and dark, and check the columns only the lit frame has.
+// Render the case with the caret lit and dark, and check the columns only the lit frame has.
 fn check(w: *std.Io.Writer, driver: *Driver, case: Case) !usize {
     const app: *app_mod.App = @ptrCast(@alignCast(driver.host.root_ctx));
     app.focus = case.focus;
@@ -199,8 +198,9 @@ fn check(w: *std.Io.Writer, driver: *Driver, case: Case) !usize {
         const b = dark.columnInk(x);
         if (a > b) {
             bar_columns += 1;
-            // The glyph's own ink under the bar. A caret between two digits has nowhere else to go; it only has to
-            // be a colour you can tell apart from the text, which is checked below.
+            // The glyph's own ink under the bar. A caret between two digits has nowhere else to go; it only has to be a colour you can tell apart from the text,
+
+            // which is checked below.
             if (b > 0) on_ink += 1;
         }
         // Outside the caret columns the two frames must be identical: the caret must not move the text.

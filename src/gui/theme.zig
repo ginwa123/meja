@@ -1,4 +1,4 @@
-//! Colours and metrics for the GUI, in one place so the palette can be read and changed.
+// Colours and metrics for the GUI, in one place so the palette can be read and changed.
 
 const ui = @import("glinlandui");
 const Color = ui.Color;
@@ -27,13 +27,14 @@ pub const text_dim = Color.hexC("#8a8a94");
 pub const text_faint = Color.hexC("#5a5a64");
 pub const text_ghost = Color.hexC("#3f3f49");
 
-/// NULL, deliberately dimmer than a real value so a column of NULLs reads as mostly empty.
+// NULL, deliberately dimmer than a real value so a column of NULLs reads as mostly empty.
 pub const text_null_value = Color.hexC("#4f6a8a");
 
 // Accents.
 pub const accent = Color.hexC("#7aa2c4");
-/// The insertion point. Deliberately NOT the text colour: a caret that matches the text merges with the glyph it
-/// touches, and a 1 px bar across a digit then reads as a malformed character.
+// The insertion point. Deliberately NOT the text colour: a caret that matches the text merges with the glyph it touches, and a 1 px bar across a digit
+
+// then reads as a malformed character.
 pub const caret = Color.hexC("#9dc0e0");
 pub const ok = Color.hexC("#7fae8a");
 pub const warn = Color.hexC("#c8a45c");
@@ -48,16 +49,16 @@ pub const font_size: u16 = 14;
 pub const font_size_small: u16 = 13;
 pub const font_size_tiny: u16 = 11;
 
-/// One grid row, header included.
+// One grid row, header included.
 pub const row_height: u16 = 22;
 
-/// One tree row. Taller than a grid row: a tree is read, a grid is scanned.
+// One tree row. Taller than a grid row: a tree is read, a grid is scanned.
 pub const tree_row_height: u16 = 24;
 
-/// Horizontal padding inside a grid cell; column widths are computed from it.
+// Horizontal padding inside a grid cell; column widths are computed from it.
 pub const cell_padding: u16 = 6;
 
-/// Width of the schema tree, wide enough for a 30-character table name at the small font.
+// Width of the schema tree, wide enough for a 30-character table name at the small font.
 pub const sidebar_width: f32 = 272;
 
 // Chrome heights.
@@ -67,7 +68,7 @@ pub const status_h: f32 = 26;
 pub const bar_h: f32 = 30;
 pub const grip_h: f32 = 5;
 
-/// Width of the row-number gutter in the grid.
+// Width of the row-number gutter in the grid.
 pub const rownum_w: f32 = 44;
 
 test "grid stripes are distinguishable but close" {
