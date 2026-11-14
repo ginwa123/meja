@@ -18,6 +18,7 @@ const grid = glin.table;
 const picker_mod = @import("components/picker.zig");
 const dialog = @import("components/dialog.zig");
 const theme = @import("theme.zig");
+const trace = @import("trace.zig");
 
 /// Measures a run with the font that draws it, so a field's caret sits on the glyph boundary instead of on a guess.
 fn measureRun(bytes: []const u8, font_size: u16) f32 {
@@ -145,6 +146,12 @@ pub const App = struct {
     pending_load: bool = false,
     /// True while a re-run is fetching more rows for the SAME statement, which is the only case that keeps the bigger row budget.
     loading_more: bool = false,
+    /// Frames drawn so far, printed by the tracer so a repeat shows up as consecutive frame numbers.
+    frame_no: u64 = 0,
+    /// Statements executed so far. A number that climbs by one per frame is a loop.
+    queries: usize = 0,
+    /// Tree row count of the last frame, so a rebuild that changes it is logged once instead of every frame.
+    last_tree_len: usize = 0,
     /// Decides when the grid has scrolled into the bottom zone and needs another chunk. The toolkit owns the rule.
     loader: glin.table.Loader = .{},
     sort_col: ?usize = null,
@@ -176,6 +183,7 @@ pub const App = struct {
 
     /// Tell the models which one the keyboard is going to. The toolkit resets its own frame scratch.
     pub fn beginFrame(self: *App) void {
+        self.frame_no += 1;
         // One focus, one caret: an unfocused field draws no caret at all, so exactly one of these is ever true.
         self.ed.focused = self.focus == .sql_editor;
         self.tree_search_ed.focused = self.focus == .tree_search;
@@ -447,6 +455,8 @@ pub const App = struct {
 
         // Only the LAST statement's result is shown, which matches what the sqlite3 CLI does: a script's final SELECT is the answer.
         for (statements) |st| {
+            self.queries += 1;
+            trace.log("frame {d} QUERY #{d} budget={d} sql={s}", .{ self.frame_no, self.queries, self.loaded_rows, st.text[0..@min(st.text.len, 60)] });
             self.clearResult();
             self.result = query.run(self.gpa, &self.db, st.text, .{
                 .limit = .{ .rows = self.loaded_rows },
@@ -504,6 +514,7 @@ pub const App = struct {
     /// Toggle a table's expansion, loading its columns on first open.
     pub fn toggleTable(self: *App, index: usize) void {
         if (index >= self.tables.items.len) return;
+        trace.log("frame {d} TOGGLE TABLE {s}", .{ self.frame_no, self.tables.items[index].name });
         const t = &self.tables.items[index];
         t.expanded = !t.expanded;
         if (t.expanded and t.columns == null and !t.columns_failed) {
@@ -541,6 +552,7 @@ pub const App = struct {
     /// Open a table in a tab, or switch to the tab that already holds it.
     pub fn openTableTab(self: *App, index: usize) void {
         if (index >= self.tables.items.len) return;
+        trace.log("frame {d} OPEN TABLE {s}", .{ self.frame_no, self.tables.items[index].name });
         self.saveActiveTab();
 
         for (self.tabs.items, 0..) |t, i| {
@@ -588,6 +600,7 @@ pub const App = struct {
     /// Load the active tab's SQL into the editor and run it.
     fn loadActiveTab(self: *App) void {
         if (self.active_tab >= self.tabs.items.len) return;
+        trace.log("frame {d} LOAD TAB {d}", .{ self.frame_no, self.active_tab });
         const t = &self.tabs.items[self.active_tab];
         self.ed.setText(t.sql);
         self.runEditor();
@@ -650,6 +663,12 @@ pub const App = struct {
 
     /// Rebuild the tree rows from the schema and the search. Call once per frame, after `beginFrame`.
     pub fn rebuildTree(self: *App) void {
+        defer {
+            if (self.tree_rows.items.len != self.last_tree_len) {
+                trace.log("frame {d} TREE rows {d} -> {d}", .{ self.frame_no, self.last_tree_len, self.tree_rows.items.len });
+                self.last_tree_len = self.tree_rows.items.len;
+            }
+        }
         self.tree_rows.clearRetainingCapacity();
         self.tree_actions.clearRetainingCapacity();
 
@@ -869,11 +888,13 @@ pub const App = struct {
         if (!self.has_result or !self.result.truncated) return;
         self.loaded_rows += 200;
         self.pending_load = true;
+        trace.log("frame {d} LOAD-MORE requested, budget now {d}", .{ self.frame_no, self.loaded_rows });
     }
 
     /// Re-run the active tab's query at the current row budget.
     pub fn applyPendingLoad(self: *App) void {
         if (!self.pending_load) return;
+        trace.log("frame {d} APPLY pending load", .{self.frame_no});
         self.pending_load = false;
         self.loading_more = true;
         defer self.loading_more = false;
