@@ -186,6 +186,8 @@ pub const App = struct {
     /// Tell the models which one the keyboard is going to. The toolkit resets its own frame scratch.
     pub fn beginFrame(self: *App) void {
         self.frame_no += 1;
+        // The toolkit drops the keyboard when a press lands outside the focused field; follow it, or typing would go to a field with no caret.
+        if (glin.frame.focusWasCleared()) self.focus = .sql_editor;
         // One focus, one caret: an unfocused field draws no caret at all, so exactly one of these is ever true.
         self.ed.focused = self.focus == .sql_editor;
         self.tree_search_ed.focused = self.focus == .tree_search;
