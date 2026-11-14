@@ -776,6 +776,29 @@ test "scrolling into the bottom asks for one chunk, not one per frame of the ges
     try testing.expect(!h.app.pending_load);
 }
 
+test "clicking a table in the sidebar opens its tab and loads its rows" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    try seed(h.app);
+    h.app.loadTables();
+    h.installKeys();
+    h.frame();
+
+    // The tree is connection / Tables / users; the table is the third row.
+    const tree = try boxOf(&h, "sidebar.tree");
+    const row_h: f32 = @floatFromInt(theme.tree_row_height);
+    h.driver.clickAt(tree.x + 40, tree.y + row_h * 2 + row_h * 0.5);
+    h.frame();
+
+    try testing.expectEqual(@as(usize, 1), h.app.tabs.items.len);
+    try testing.expect(h.app.has_result);
+    try testing.expectEqual(@as(usize, 3), h.app.row_order.items.len);
+    try testing.expectEqual(@as(?usize, 0), h.app.selected);
+    try testing.expect(std.mem.startsWith(u8, h.app.ed.text(), "SELECT * FROM"));
+    try h.driver.expectText("users");
+}
+
 // ---- Frame stability ----
 
 // What one rendered frame looked like, per command: a digest, the element id and the box.
