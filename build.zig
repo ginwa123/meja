@@ -20,13 +20,6 @@ pub fn build(b: *std.Build) void {
         "Comma-separated database backends: 'sqlite' (default) or 'sqlite,postgres'",
     ) orelse "sqlite";
 
-    // The GUI renders on the CPU, so an unoptimized build is unusable: Debug is ~10x slower per frame. ReleaseFast is the default for the executable and the inspect tool; the tests stay in `optimize`.
-    const gui_optimize = b.option(
-        std.builtin.OptimizeMode,
-        "gui-optimize",
-        "Optimize mode for meja-gui and meja-inspect (default: ReleaseSafe)",
-    ) orelse .ReleaseSafe;
-
     // --- dependency: databases (ruangsql) ---
     const databases_dep = b.dependency("databases", .{
         .target = target,
@@ -38,10 +31,9 @@ pub fn build(b: *std.Build) void {
     // --- dependency: glinlandui (GUI only) ---
     var glinlandui_dep: ?*std.Build.Dependency = null;
     if (build_gui) {
-        // Built at the GUI's optimize mode: its C sources carry sanitizer instrumentation in Debug, which a ReleaseFast link cannot resolve.
         glinlandui_dep = b.dependency("glinlandui", .{
             .target = target,
-            .optimize = gui_optimize,
+            .optimize = optimize,
         });
     }
 
@@ -83,20 +75,9 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "glinlandui", .module = glinlandui_dep.?.module("glinlandui") },
             },
         });
-        // A second module at the GUI's own optimize mode: the tests stay in Debug, the shipped binary does not.
-        const gui_exe_mod = b.createModule(.{
-            .root_source_file = b.path("src/gui/main.zig"),
-            .target = target,
-            .optimize = gui_optimize,
-            .imports = &.{
-                .{ .name = "meja", .module = meja_mod },
-                .{ .name = "databases", .module = databases_mod },
-                .{ .name = "glinlandui", .module = glinlandui_dep.?.module("glinlandui") },
-            },
-        });
         const ge = b.addExecutable(.{
             .name = "meja-gui",
-            .root_module = gui_exe_mod,
+            .root_module = gui_mod.?,
         });
         gui_exe = ge;
         b.installArtifact(ge);
@@ -124,7 +105,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/gui/inspect.zig"),
                 .target = target,
-                .optimize = gui_optimize,
+                .optimize = optimize,
                 .imports = &.{
                     .{ .name = "meja", .module = meja_mod },
                     .{ .name = "databases", .module = databases_mod },
@@ -145,7 +126,7 @@ pub fn build(b: *std.Build) void {
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/gui/verify.zig"),
                 .target = target,
-                .optimize = gui_optimize,
+                .optimize = optimize,
                 .imports = &.{
                     .{ .name = "meja", .module = meja_mod },
                     .{ .name = "databases", .module = databases_mod },
@@ -204,7 +185,7 @@ pub fn build(b: *std.Build) void {
     // ---- size: no .zig file over 3000 lines; POSIX sh, so an opt-in step ----
     const lines_check = b.step("lines:check", "Fail if any .zig file exceeds 3000 lines");
     const run_lines_check = b.addSystemCommand(&.{
-        "sh", "-c",
+        "sh",                                                                                                                                                "-c",
         "find src -name '*.zig' -exec wc -l {} + | awk '$1 > 3000 && $2 != \"total\" { print $2 \": \" $1 \" lines (max 3000)\"; bad=1 } END { exit bad }'",
     });
     run_lines_check.has_side_effects = true;

@@ -54,8 +54,7 @@ pub fn pickerPaneChildren(self: *App) void {
     }, self, pickerBarChildren);
 
     if (self.picker.error_message) |err| {
-        const buf = self.claimText(64);
-        const shown = std.fmt.bufPrint(buf, "cannot read directory: {s}", .{err}) catch buf[0..0];
+        const shown = ui.frame.formatText("cannot read directory: {s}", .{err});
         text_mod.label(.{ .str = shown, .font_size = theme.font_size_small, .color = theme.danger });
         return;
     }
@@ -134,7 +133,7 @@ const PickerRowCtx = struct {
 pub fn pickerRow(app: *App, index: usize) void {
     const ctx = PickerRowCtx{ .app = app, .index = index };
     const selected = app.picker.cursor == index;
-    const id = app.cellId("picker.row", index);
+    const id = ui.frame.elementId("picker.row", index);
 
     box_mod.box(.{
         .id = id,

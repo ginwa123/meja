@@ -61,7 +61,7 @@ const PaletteCtx = struct { app: *App, table_index: usize };
 
 pub fn paletteRow(self: *App, i: usize) void {
     const table_index = self.paletteMatchAt(i) orelse return;
-    const id = self.cellId("palette.row", i);
+    const id = ui.frame.elementId("palette.row", i);
     const selected = self.palette_idx == i;
 
     box_mod.box(.{

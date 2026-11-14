@@ -113,17 +113,15 @@ pub fn resultsStats(self: *App) void {
         text_mod.label(.{ .str = "no results", .font_size = theme.font_size_tiny, .color = theme.text_faint });
         return;
     }
-    const buf = self.claimText(96);
-    const shown = std.fmt.bufPrint(buf, "{d} rows x {d} cols", .{
+    const shown = ui.frame.formatText("{d} rows x {d} cols", .{
         self.row_order.items.len,
         self.result.columnCount(),
-    }) catch buf[0..0];
+    });
     text_mod.label(.{ .str = shown, .font_size = theme.font_size_tiny, .color = theme.text_dim });
 
-    const ms_buf = self.claimText(32);
-    const ms_text = std.fmt.bufPrint(ms_buf, "{d} ms", .{
+    const ms_text = ui.frame.formatText("{d} ms", .{
         self.result.elapsed_ns / 1_000_000,
-    }) catch ms_buf[0..0];
+    });
     text_mod.label(.{ .str = ms_text, .font_size = theme.font_size_tiny, .color = theme.text_faint });
     if (self.filter.len > 0) {
         text_mod.label(.{ .str = "filtered", .font_size = theme.font_size_tiny, .color = theme.warn });

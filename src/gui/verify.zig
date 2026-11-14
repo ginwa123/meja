@@ -132,8 +132,7 @@ pub fn main(init: std.process.Init) !void {
         .focus = .sql_editor,
     });
 
-    // Everything that differs between the caret lit and the caret dark, anywhere on the surface: if the blink is
-    // visible somewhere other than the caret, this is where it shows.
+    // Everything that differs between the caret lit and the caret dark, anywhere on the surface: a blink elsewhere shows here.
     failures += try reportLitDarkDiff(w, &driver, &app);
 
     std.debug.print("{s}", .{out.written()});

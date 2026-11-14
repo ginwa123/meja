@@ -716,6 +716,39 @@ test "the caret is a box at the caret column, not a glyph inside the text" {
     try h.driver.expectText("SELECT 1");
 }
 
+test "only the focused field draws a caret, so nothing blinks at you from another box" {
+    const gpa = std.heap.page_allocator;
+    var h = try Harness.init(gpa);
+    defer h.deinit();
+    h.installKeys();
+    _ = h.app.ed.insertSlice("SELECT 1");
+    h.driver.frame();
+
+    // The SQL editor owns the keyboard at startup: it has a caret, and the sidebar search field has none.
+    try testing.expectEqual(app_mod.Focus.sql_editor, h.app.focus);
+    try testing.expect(editor.caretVisible(&h.app.ed));
+    try testing.expect(!editor.caretVisible(&h.app.tree_search_ed));
+    try testing.expect(h.driver.box("editor.caret.0") != null);
+
+    // Handing focus to the search field moves the one caret there; the editor reports none, so it draws none.
+    h.app.focus = .tree_search;
+    h.driver.frame();
+    try testing.expect(editor.caretVisible(&h.app.tree_search_ed));
+    try testing.expect(fieldCaret("sidebar.search"));
+    try testing.expect(!editor.caretVisible(&h.app.ed));
+
+    // And back: exactly one caret, wherever the keyboard is.
+    h.app.focus = .sql_editor;
+    h.driver.frame();
+    try testing.expect(editor.caretVisible(&h.app.ed));
+    try testing.expect(!editor.caretVisible(&h.app.tree_search_ed));
+}
+
+// True when the live field with this id declared its caret this frame. The field floats it as IDI(id, 2).
+fn fieldCaret(field_id: []const u8) bool {
+    return ui.zclay.getElementData(ui.zclay.ElementId.IDI(field_id, 2)).found;
+}
+
 // ---- Frame stability ----
 
 // What one rendered frame looked like, per command: a digest, the element id and the box.

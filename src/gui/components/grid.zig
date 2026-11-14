@@ -186,7 +186,7 @@ const HeaderCtx = struct { app: *App, col: usize };
 
 pub fn headerCell(self: *App, c: usize) void {
     const width = if (c < self.col_widths.items.len) self.col_widths.items[c] else 120;
-    const id = self.cellId("grid.head", c);
+    const id = ui.frame.elementId("grid.head", c);
 
     box_mod.box(.{
         .id = id,
@@ -216,7 +216,7 @@ pub fn headerCellChildren(ctx: HeaderCtx) void {
         .null_value => "NULL",
         .unknown => "?",
     };
-    const badge_id = self.cellId("grid.head.badge", c);
+    const badge_id = ui.frame.elementId("grid.head.badge", c);
     badge_mod.badge(.{
         .id = badge_id,
         .label = type_name,
@@ -278,7 +278,7 @@ pub fn padBox(self: *App, id: []const u8, height: f32) void {
 const RowCtx = struct { app: *App, display: usize };
 
 pub fn gridRow(self: *App, display_index: usize) void {
-    const id = self.cellId("grid.row", display_index);
+    const id = ui.frame.elementId("grid.row", display_index);
 
     box_mod.box(.{
         .id = id,
@@ -298,7 +298,7 @@ pub fn gridRowChildren(ctx: RowCtx) void {
 
     // Row number: the display position, so a filtered view still counts 1..n.
     box_mod.box(.{
-        .id = self.cellId("grid.num", ctx.display),
+        .id = ui.frame.elementId("grid.num", ctx.display),
         .w = .{ .fixed = theme.rownum_w },
         .h = .grow,
         .direction = .row,
@@ -313,9 +313,7 @@ pub fn gridRowChildren(ctx: RowCtx) void {
 }
 
 pub fn rowNumChildren(ctx: RowCtx) void {
-    const self = ctx.app;
-    const buf = self.claimText(16);
-    const shown = std.fmt.bufPrint(buf, "{d}", .{ctx.display + 1}) catch buf[0..0];
+    const shown = ui.frame.formatText("{d}", .{ctx.display + 1});
     text_mod.label(.{ .str = shown, .font_size = theme.font_size_tiny, .color = theme.text_ghost });
 }
 
@@ -326,7 +324,7 @@ pub fn cell(self: *App, display_index: usize, c: usize) void {
     const width = if (c < self.col_widths.items.len) self.col_widths.items[c] else 120;
 
     box_mod.box(.{
-        .id = self.cellId2("grid.cell", display_index, c),
+        .id = ui.frame.elementId2("grid.cell", display_index, c),
         .w = .{ .fixed = @floatFromInt(width) },
         .h = .grow,
         .direction = .row,
@@ -344,7 +342,7 @@ pub fn cellChildren(ctx: CellCtx) void {
     const v = row.values[ctx.col];
     const is_null = v.isNull();
     // NOT a local buffer: the draw command keeps this pointer until the rasteriser runs. Claim what the value needs, not a fixed 512: a wide grid would exhaust the frame arena and every id would fall back to the same string.
-    const buf = self.claimText(256);
+    const buf = ui.frame.claimText(256);
     const shown = if (is_null) "NULL" else value_mod.render(buf, v);
 
     text_mod.label(.{
@@ -368,8 +366,7 @@ pub fn gridFooter(self: *App) void {
 
 pub fn gridFooterChildren(self: *App) void {
     const total = self.row_order.items.len;
-    const buf = self.claimText(96);
-    const shown = std.fmt.bufPrint(buf, "{d} rows loaded", .{total}) catch buf[0..0];
+    const shown = ui.frame.formatText("{d} rows loaded", .{total});
     text_mod.label(.{ .str = shown, .font_size = theme.font_size_tiny, .color = theme.text_dim });
 
     box_mod.spacer("pager.spacer");
@@ -388,7 +385,6 @@ pub fn gridFooterChildren(self: *App) void {
         });
     }
 }
-
 
 fn noChildren(_: *App) void {}
 

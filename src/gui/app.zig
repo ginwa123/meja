@@ -111,9 +111,6 @@ pub const App = struct {
     // Editor.
     sql_buf: [16 * 1024]u8 = undefined,
 
-    /// Scratch space for every string handed to a draw command in one frame.
-    text_arena: [2 * 1024 * 1024]u8 = undefined,
-    text_used: usize = 0,
     ed: editor.Editor = undefined,
 
     // Database selection.
@@ -172,17 +169,14 @@ pub const App = struct {
     window_w: u32 = 0,
     window_h: u32 = 0,
 
-    /// Reset the frame-scoped text arena. The fields tick their own caret blink when they draw.
+    /// Tell the models which one the keyboard is going to. The toolkit resets its own frame scratch.
     pub fn beginFrame(self: *App) void {
-        self.text_used = 0;
-    }
-
-    /// Claim `n` bytes of frame-scoped scratch.
-    pub fn claimText(self: *App, n: usize) []u8 {
-        if (self.text_used + n > self.text_arena.len) return &[_]u8{};
-        const start = self.text_used;
-        self.text_used += n;
-        return self.text_arena[start..self.text_used];
+        // One focus, one caret: an unfocused field draws no caret at all, so exactly one of these is ever true.
+        self.ed.focused = self.focus == .sql_editor;
+        self.tree_search_ed.focused = self.focus == .tree_search;
+        self.filter_ed.focused = self.focus == .row_filter;
+        self.palette_ed.focused = self.focus == .palette;
+        self.picker.field.focused = self.focus == .path;
     }
 
     /// Initialise IN PLACE.
@@ -634,18 +628,6 @@ pub const App = struct {
 
     // --- tree ---------------------------------------------------------------
 
-    /// A frame-scoped element id, e.g. `grid.cell.3`. The arena resets each frame, so the id lives exactly as long as the draw command that uses it.
-    pub fn cellId(self: *App, prefix: []const u8, i: usize) []const u8 {
-        const buf = self.claimText(48);
-        return std.fmt.bufPrint(buf, "{s}.{d}", .{ prefix, i }) catch prefix;
-    }
-
-    /// A frame-scoped element id with two indices, e.g. `grid.cell.3.1`.
-    pub fn cellId2(self: *App, prefix: []const u8, a: usize, b: usize) []const u8 {
-        const buf = self.claimText(64);
-        return std.fmt.bufPrint(buf, "{s}.{d}.{d}", .{ prefix, a, b }) catch prefix;
-    }
-
     /// Rebuild the tab bar's view of `tabs`. Call once per frame, after `beginFrame`.
     pub fn rebuildTabViews(self: *App) void {
         self.tab_views.clearRetainingCapacity();
@@ -688,7 +670,7 @@ pub const App = struct {
             .has_children = true,
             .expanded = true,
             .kind = .group,
-            .meta = self.countText(tables),
+            .meta = glin.frame.formatText("{d}", .{tables}),
         }, .folder_tables);
         self.pushTablesOfKind(q, .table);
 
@@ -699,7 +681,7 @@ pub const App = struct {
                 .has_children = true,
                 .expanded = true,
                 .kind = .group,
-                .meta = self.countText(views),
+                .meta = glin.frame.formatText("{d}", .{views}),
             }, .folder_views);
             self.pushTablesOfKind(q, .view);
         }
@@ -740,11 +722,6 @@ pub const App = struct {
         self.tree_actions.append(self.gpa, action) catch {
             _ = self.tree_rows.pop();
         };
-    }
-
-    fn countText(self: *App, n: usize) []const u8 {
-        const buf = self.claimText(16);
-        return std.fmt.bufPrint(buf, "{d}", .{n}) catch "";
     }
 
     /// Act on a clicked tree row.

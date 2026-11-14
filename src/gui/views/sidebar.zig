@@ -128,7 +128,6 @@ pub fn sidebarFooterChildren(self: *App) void {
     });
 }
 
-
 fn onTreeRowClick(ctx: ?*anyopaque, index: usize) void {
     const self: *App = @ptrCast(@alignCast(ctx.?));
     self.onTreeSelect(index);

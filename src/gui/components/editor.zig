@@ -71,8 +71,8 @@ pub fn editorBarChildren(self: *App) void {
 }
 
 pub fn editorBody(self: *App) void {
-    // The editor owns its caret clock, the same way a single-line field does; without this tick it could never blink.
-    self.ed.idle += ui.frame.delta_s;
+    // The editor owns its caret clock, the same way a single-line field does: it advances only while the editor has focus.
+    self.ed.tickBlink(ui.frame.delta_s);
     box_mod.box(.{
         .id = "editor.body",
         .w = .grow,
@@ -87,7 +87,7 @@ pub fn editorBody(self: *App) void {
 pub fn editorBodyChildren(self: *App) void {
     const line_count = @max(self.ed.lineCount(), 1);
     for (0..@min(line_count, max_editor_lines)) |line| {
-        const id = self.cellId("editor.line", line);
+        const id = ui.frame.elementId("editor.line", line);
         self.line_clicks[line] = .{ .app = self, .line = line };
         box_mod.box(.{
             .id = id,
@@ -159,7 +159,7 @@ pub fn editorLine(self: *App, line: usize, has_caret: bool) void {
             const s1 = b - start;
             if (s0 > 0) text_mod.label(.{ .str = text[0..s0], .font_size = theme.font_size, .color = theme.text });
             box_mod.box(.{
-                .id = self.cellId("editor.sel", line),
+                .id = ui.frame.elementId("editor.sel", line),
                 .w = .fit,
                 .h = .grow,
                 .direction = .row,
@@ -193,7 +193,7 @@ fn columnX(text: []const u8, at: usize) f32 {
 fn caretBar(self: *App, line: usize, at: usize, text: []const u8) void {
     if (!editor.caretVisible(&self.ed)) return;
     caret_mod.declare(.{
-        .id = .ID(self.cellId("editor.caret", line)),
+        .id = .ID(ui.frame.elementId("editor.caret", line)),
         .x = columnX(text, at),
         .height = @floatFromInt(theme.font_size + 4),
         .color = theme.caret,
