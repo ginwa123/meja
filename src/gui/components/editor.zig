@@ -47,7 +47,7 @@ pub fn editorBar(self: *App) void {
         .h = .{ .fixed = theme.bar_h },
         .direction = .row,
         .bg = theme.bg_editor,
-        .pad = props.Pad.all(6),
+        .pad = props.Pad.axes(0, theme.cell_padding),
         .gap = 8,
     }, self, editorBarChildren);
 }
@@ -60,9 +60,11 @@ pub fn editorBarChildren(self: *App) void {
         .id = .{ .text = "editor.run" },
         .label = .{ .text = "Run", .size = theme.font_size_tiny },
         .bg = theme.bg_primary,
-        .fg = theme.text_bright,
+        .fg = theme.on_primary,
         .hover_bg = theme.bg_primary_hover,
-        .pad = props.Pad.axes(3, 12),
+        .h = .{ .fixed = theme.control_sm_h },
+        .radius = props.Radius.all(theme.r_control),
+        .pad = props.Pad.axes(0, theme.control_sm_pad_x),
         .on_click = onRunClick,
         .ctx = self,
     });
@@ -77,7 +79,7 @@ pub fn editorBody(self: *App) void {
         .h = .grow,
         .direction = .column,
         .bg = theme.bg_editor,
-        .pad = props.Pad.all(6),
+        .pad = props.Pad.axes(0, theme.cell_padding),
         .gap = 0,
     }, self, editorBodyChildren);
 }
@@ -112,7 +114,7 @@ fn lineOffsetAtPointer(self: *App, line: usize) ?usize {
     while (end < self.ed.len and self.ed.buf[end] != '\n') end += 1;
     // The body is the box every line shares, and its padding is where the text starts.
     const body = ui.frame.bounds(ui.frame.clayId("editor.body")) orelse return null;
-    const rel_x = @max(ui.frame.ptr_x - body.x - 6, 0);
+    const rel_x = @max(ui.frame.ptr_x - body.x - theme.cell_padding, 0);
     return start + editor.offsetAtX(self.ed.buf[start..end], rel_x, theme.font_size, measureRun);
 }
 

@@ -24,7 +24,7 @@ pub fn statusBar(self: *App) void {
         .h = .{ .fixed = theme.status_h },
         .direction = .row,
         .bg = theme.bg_panel,
-        .pad = props.Pad.all(8),
+        .pad = props.Pad.axes(0, 8),
         .gap = 12,
     }, self, statusBarChildren);
 }

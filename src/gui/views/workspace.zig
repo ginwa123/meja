@@ -43,7 +43,7 @@ pub fn tabBar(self: *App) void {
             .h = .{ .fixed = theme.tabs_h },
             .direction = .row,
             .bg = theme.bg_panel,
-            .pad = props.Pad.all(8),
+            .pad = props.Pad.axes(0, 10),
         }, self, tabsEmptyChildren);
         return;
     }
@@ -96,7 +96,7 @@ pub fn resultsBar(self: *App) void {
         .h = .{ .fixed = theme.bar_h },
         .direction = .row,
         .bg = theme.bg_panel,
-        .pad = props.Pad.all(6),
+        .pad = props.Pad.axes(0, 10),
         .gap = 10,
     }, self, resultsBarChildren);
 }

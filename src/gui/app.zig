@@ -211,9 +211,10 @@ pub const App = struct {
             .sel_fg = theme.text_bright,
             .sel_bg = theme.bg_selected,
             .caret_fg = theme.caret,
-            .h = .{ .fixed = 28 },
-            .pad = glin.props.Pad.axes(4, 8),
-            .border = .{ .width = 1, .color = theme.line },
+            .h = .{ .fixed = theme.field_sm_h },
+            .pad = glin.props.Pad.axes(0, theme.field_pad_x),
+            .border = .{ .width = 1, .color = theme.edge },
+            .radius = glin.props.Radius.all(theme.r_control),
             .measure = measureRun,
             .on_focus = focusTreeSearch,
             .ctx = self,
@@ -227,9 +228,10 @@ pub const App = struct {
             .sel_bg = theme.bg_selected,
             .caret_fg = theme.caret,
             .w = .{ .fixed = 180 },
-            .h = .{ .fixed = 22 },
-            .pad = glin.props.Pad.axes(2, 8),
-            .border = .{ .width = 1, .color = theme.line },
+            .h = .{ .fixed = theme.field_sm_h },
+            .pad = glin.props.Pad.axes(0, theme.field_pad_x),
+            .border = .{ .width = 1, .color = theme.edge },
+            .radius = glin.props.Radius.all(theme.r_control),
             .measure = measureRun,
             .on_focus = focusFilter,
             .ctx = self,
@@ -242,9 +244,10 @@ pub const App = struct {
             .sel_fg = theme.text_bright,
             .sel_bg = theme.bg_selected,
             .caret_fg = theme.caret,
-            .h = .{ .fixed = 30 },
-            .pad = glin.props.Pad.axes(5, 10),
-            .border = .{ .width = 1, .color = theme.line },
+            .h = .{ .fixed = theme.field_h },
+            .pad = glin.props.Pad.axes(0, theme.field_pad_x),
+            .border = .{ .width = 1, .color = theme.edge },
+            .radius = glin.props.Radius.all(theme.r_control),
             .measure = measureRun,
             .on_focus = focusPalette,
             .ctx = self,
@@ -254,8 +257,10 @@ pub const App = struct {
         self.picker.field.bg = theme.bg_editor;
         self.picker.field.sel_fg = theme.bg_selected;
         self.picker.field.w = .{ .fixed = 520 };
-        self.picker.field.h = .{ .fixed = 30 };
-        self.picker.field.pad = glin.props.Pad.axes(4, 8);
+        self.picker.field.h = .{ .fixed = theme.field_h };
+        self.picker.field.pad = glin.props.Pad.axes(0, theme.field_pad_x);
+        self.picker.field.border = .{ .width = 1, .color = theme.edge };
+        self.picker.field.radius = glin.props.Radius.all(theme.r_control);
         self.picker.field.measure = measureRun;
         self.picker.field.on_focus = focusPickerField;
         self.picker.field.ctx = self;

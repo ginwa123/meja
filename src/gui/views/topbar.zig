@@ -24,7 +24,7 @@ pub fn topBar(self: *App) void {
         .h = .{ .fixed = theme.topbar_h },
         .direction = .row,
         .bg = theme.bg_panel,
-        .pad = props.Pad.all(10),
+        .pad = props.Pad.axes(9, 10),
         .gap = 10,
     }, self, topBarChildren);
 }
@@ -36,10 +36,13 @@ pub fn topBarChildren(self: *App) void {
     button.button(.{
         .id = .{ .text = "topbar.palette" },
         .label = .{ .text = "Search tables or run a command   Ctrl+K", .size = theme.font_size_small },
-        .bg = theme.bg_editor,
+        .bg = theme.bg_app,
         .fg = theme.text_faint,
         .hover_bg = theme.bg_header,
-        .pad = props.Pad.axes(5, 12),
+        .h = .{ .fixed = 26 },
+        .radius = props.Radius.all(theme.r_control),
+        .border = .{ .width = 1, .color = theme.line },
+        .pad = props.Pad.axes(0, theme.field_pad_x),
         .on_click = onPaletteClick,
         .ctx = self,
     });
@@ -76,11 +79,11 @@ pub fn connChip(self: *App) void {
     box_mod.box(.{
         .id = .{ .text = "chip" },
         .w = .fit,
-        .h = .grow,
+        .h = .{ .fixed = 26 },
         .direction = .row,
         .bg = theme.bg_chip,
-        .radius = props.Radius.all(6),
-        .pad = props.Pad.all(6),
+        .radius = props.Radius.all(theme.r_control),
+        .pad = props.Pad.axes(0, 8),
         .gap = 7,
     }, self, connChipChildren);
 }

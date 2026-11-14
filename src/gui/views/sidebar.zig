@@ -52,8 +52,8 @@ pub fn sidebarTree(self: *App) void {
         .id = .{ .text = "sidebar.tree" },
         .rows = self.tree_rows.items,
         .row_h = theme.tree_row_height,
-        .indent = 13,
-        .pad_lr = 6,
+        .indent = 17,
+        .pad_lr = theme.cell_padding,
         .row_bg = theme.bg_panel,
         .selected_bg = theme.bg_selected,
         .hover_bg = theme.bg_header,
@@ -62,6 +62,8 @@ pub fn sidebarTree(self: *App) void {
         .group_fg = theme.text_bright,
         .meta_fg = theme.text_faint,
         .caret_fg = theme.text_faint,
+        // Selection is a fill AND a 2px bar: colour is never the only cue.
+        .selected_bar = theme.accent,
         .on_select = onTreeRowClick,
         .ctx = self,
     });
@@ -84,7 +86,9 @@ pub fn sidebarFooterChildren(self: *App) void {
         .bg = theme.bg_header,
         .fg = theme.text_dim,
         .hover_bg = theme.bg_hover,
-        .pad = props.Pad.axes(3, 8),
+        .h = .{ .fixed = theme.control_sm_h },
+        .radius = props.Radius.all(theme.r_control),
+        .pad = props.Pad.axes(0, theme.control_sm_pad_x),
         .on_click = onSidebarOpenClick,
         .ctx = self,
     });
@@ -94,7 +98,9 @@ pub fn sidebarFooterChildren(self: *App) void {
         .bg = theme.bg_header,
         .fg = theme.text_dim,
         .hover_bg = theme.bg_hover,
-        .pad = props.Pad.axes(3, 8),
+        .h = .{ .fixed = theme.control_sm_h },
+        .radius = props.Radius.all(theme.r_control),
+        .pad = props.Pad.axes(0, theme.control_sm_pad_x),
         .on_click = onSidebarBrowseClick,
         .ctx = self,
     });
@@ -104,7 +110,9 @@ pub fn sidebarFooterChildren(self: *App) void {
         .bg = theme.bg_header,
         .fg = theme.text_dim,
         .hover_bg = theme.bg_hover,
-        .pad = props.Pad.axes(3, 8),
+        .h = .{ .fixed = theme.control_sm_h },
+        .radius = props.Radius.all(theme.r_control),
+        .pad = props.Pad.axes(0, theme.control_sm_pad_x),
         .on_click = onNewQueryClick,
         .ctx = self,
     });

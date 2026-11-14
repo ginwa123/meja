@@ -82,8 +82,11 @@ pub fn pickerBarChildren(self: *App) void {
     button.button(.{
         .id = .{ .text = "picker.open" },
         .label = .{ .text = "Open", .size = theme.font_size },
-        .bg = theme.bg_selected,
-        .pad = props.Pad.axes(5, 14),
+        .bg = theme.bg_primary,
+        .fg = theme.on_primary,
+        .h = .{ .fixed = theme.control_h },
+        .radius = props.Radius.all(theme.r_control),
+        .pad = props.Pad.axes(0, theme.control_pad_x),
         .on_click = onOpenButtonClick,
         .ctx = self,
     });
@@ -91,14 +94,20 @@ pub fn pickerBarChildren(self: *App) void {
         .id = .{ .text = "picker.browse" },
         .label = .{ .text = "Browse…", .size = theme.font_size },
         .bg = theme.bg_header,
-        .pad = props.Pad.axes(5, 14),
+        .fg = theme.text,
+        .h = .{ .fixed = theme.control_h },
+        .radius = props.Radius.all(theme.r_control),
+        .pad = props.Pad.axes(0, theme.control_pad_x),
         .on_click = onPickerBrowseClick,
         .ctx = self,
     });
     button.button(.{
         .id = .{ .text = "picker.cancel" },
         .label = .{ .text = "Cancel", .size = theme.font_size },
-        .pad = props.Pad.axes(5, 14),
+        .fg = theme.text_dim,
+        .h = .{ .fixed = theme.control_h },
+        .radius = props.Radius.all(theme.r_control),
+        .pad = props.Pad.axes(0, theme.control_pad_x),
         .on_click = onCancelButtonClick,
         .ctx = self,
     });
@@ -121,9 +130,9 @@ pub fn pickerRow(app: *App, index: usize) void {
         .h = .{ .fixed = @floatFromInt(theme.row_height) },
         .direction = .row,
         .gap = 6,
-        .pad = props.Pad.all(2),
+        .pad = props.Pad.axes(0, 6),
         .bg = if (selected) theme.bg_selected else theme.bg_header,
-        .radius = props.Radius.all(3),
+        .radius = props.Radius.all(theme.r_badge),
     }, ctx, pickerRowChildren);
 
     registry.registerZCursor(ui.frame.clayId(id), onPickerRowClick, app, index, 0, .pointer);

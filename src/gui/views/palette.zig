@@ -55,11 +55,11 @@ pub fn paletteRow(self: *App, i: usize) void {
     box_mod.box(.{
         .id = .{ .text = id },
         .w = .grow,
-        .h = .{ .fixed = 24 },
+        .h = .{ .fixed = 32 },
         .direction = .row,
         .bg = if (selected) theme.bg_selected else theme.bg_panel,
-        .radius = props.Radius.all(4),
-        .pad = props.Pad.all(4),
+        .radius = props.Radius.all(theme.r_badge),
+        .pad = props.Pad.axes(0, 8),
         .gap = 8,
     }, PaletteCtx{ .app = self, .table_index = table_index }, paletteRowChildren);
 

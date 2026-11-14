@@ -130,7 +130,7 @@ pub fn gridHeader(self: *App) void {
         .id = .{ .text = "grid.header" },
         .w = .{ .clamp = .{ .min = 0, .max = viewportWidth(self), .grow = true } },
 
-        .h = .{ .fixed = @floatFromInt(theme.row_height) },
+        .h = .{ .fixed = @floatFromInt(theme.header_height) },
         .direction = .row,
         .bg = theme.bg_header,
         .gap = 0,
@@ -144,7 +144,7 @@ pub fn gridHeaderChildren(self: *App) void {
         .w = .{ .fixed = theme.rownum_w },
         .h = .grow,
         .direction = .row,
-        .pad = props.Pad.all(4),
+        .pad = props.Pad.axes(0, theme.cell_padding),
     }, self, headerNumChildren);
 
     // The header is outside the scroll container, so it follows the body's horizontal offset by hand.
@@ -183,7 +183,7 @@ pub fn headerCell(self: *App, c: usize) void {
         .w = .{ .fixed = @floatFromInt(width) },
         .h = .grow,
         .direction = .row,
-        .pad = props.Pad.all(4),
+        .pad = props.Pad.axes(0, theme.cell_padding),
         .gap = 6,
     }, HeaderCtx{ .app = self, .col = c }, headerCellChildren);
 
@@ -287,7 +287,7 @@ pub fn gridRowChildren(ctx: RowCtx) void {
         .w = .{ .fixed = theme.rownum_w },
         .h = .grow,
         .direction = .row,
-        .pad = props.Pad.all(4),
+        .pad = props.Pad.axes(0, theme.cell_padding),
     }, ctx, rowNumChildren);
 
     var c: usize = 0;
@@ -313,7 +313,7 @@ pub fn cell(self: *App, display_index: usize, c: usize) void {
         .w = .{ .fixed = @floatFromInt(width) },
         .h = .grow,
         .direction = .row,
-        .pad = props.Pad.all(4),
+        .pad = props.Pad.axes(0, theme.cell_padding),
     }, CellCtx{ .app = self, .display = display_index, .col = c }, cellChildren);
 }
 
@@ -339,10 +339,10 @@ pub fn gridFooter(self: *App) void {
     box_mod.box(.{
         .id = .{ .text = "pager" },
         .w = .grow,
-        .h = .{ .fixed = 28 },
+        .h = .{ .fixed = theme.status_h },
         .direction = .row,
         .bg = theme.bg_panel,
-        .pad = props.Pad.all(6),
+        .pad = props.Pad.axes(0, theme.cell_padding),
         .gap = 8,
     }, self, gridFooterChildren);
 }
