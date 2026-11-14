@@ -628,10 +628,11 @@ test "dragging across a field selects the run under the pointer" {
 
     const bb = h.driver.box("sidebar.search") orelse return error.ElementNotFound;
     const y = bb.y + bb.height * 0.5;
-    // Press just inside the left edge (the field pads by 8), then drag three characters right.
+    // Press just inside the left edge (the field pads by 8), then drag exactly three MEASURED characters right.
+    const three = ui.text.measureText("use", theme.font_size_small).w;
     h.driver.pressAt(bb.x + 9, y);
-    h.driver.move(bb.x + 9 + 3 * 7.8, y);
-    h.driver.releaseAt(bb.x + 9 + 3 * 7.8, y);
+    h.driver.move(bb.x + 8 + three, y);
+    h.driver.releaseAt(bb.x + 8 + three, y);
 
     const span = h.app.tree_search_ed.caret.selection() orelse return error.NoSelection;
     try testing.expect(span.start == 0);

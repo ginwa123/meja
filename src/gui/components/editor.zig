@@ -11,6 +11,7 @@ const tabs_mod = ui.components.tabs;
 const badge_mod = ui.components.badge;
 
 const cl = ui.zclay;
+const caret_mod = ui.components.caret;
 const app_mod = @import("../app.zig");
 const LineClick = app_mod.LineClick;
 const max_editor_lines = app_mod.max_editor_lines;
@@ -115,7 +116,7 @@ fn lineOffsetAtPointer(self: *App, line: usize) ?usize {
     const body = cl.getElementData(cl.getElementId("editor.body"));
     if (!body.found) return null;
     const rel_x = @max(ui.frame.ptr_x - body.bounding_box.x - 6, 0);
-    return start + offsetAtX(self.ed.buf[start..end], rel_x);
+    return start + editor.offsetAtX(self.ed.buf[start..end], rel_x, theme.font_size, measureRun);
 }
 
 /// Place the caret from a click on a line: the column comes from x, the line is the one that was hit.
@@ -178,50 +179,27 @@ pub fn editorLine(self: *App, line: usize, has_caret: bool) void {
     if (caret_at) |at| caretBar(self, line, at, text);
 }
 
+/// Measures a run with the font that draws it.
+fn measureRun(bytes: []const u8, font_size: u16) f32 {
+    return ui.text.measureText(bytes, font_size).w;
+}
+
 /// The x of byte `at` in `text`, measured with the font that draws the line — not a guessed cell width.
 fn columnX(text: []const u8, at: usize) f32 {
     return ui.text.measureText(text[0..@min(at, text.len)], theme.font_size).w;
 }
 
-/// The byte offset in `text` closest to `x`, measured the same way the line is drawn.
-fn offsetAtX(text: []const u8, x: f32) usize {
-    if (text.len == 0 or x <= 0) return 0;
-    var lo: usize = 0;
-    var hi: usize = text.len;
-    // Largest offset whose prefix still ends left of x.
-    while (lo < hi) {
-        const mid = (lo + hi + 1) / 2;
-        if (columnX(text, mid) <= x) lo = mid else hi = mid - 1;
-    }
-    // Never leave the caret inside a codepoint.
-    while (lo > 0 and lo < text.len and (text[lo] & 0xC0) == 0x80) lo -= 1;
-    // The nearer edge wins, which is what makes a click between two letters feel right.
-    if (lo < text.len) {
-        const step = editor.codepointLen(text, lo);
-        if (x - columnX(text, lo) > columnX(text, lo + step) - x) return lo + step;
-    }
-    return lo;
-}
-
-/// The caret: a 1px bar floated over the line at the caret's column.
-///
-/// It is NOT a `|` inserted into the text. A glyph takes a character cell, so the tail of the line shifted every time
-/// the caret blinked, and it sat on the baseline like a letter instead of standing between two of them.
+/// The caret: the shared primitive, floated at the measured end of the run before it.
 fn caretBar(self: *App, line: usize, at: usize, text: []const u8) void {
-    cl.UI()(.{
+    if (!editor.caretVisible(&self.ed)) return;
+    caret_mod.declare(.{
         .id = .ID(self.cellId("editor.caret", line)),
-        .layout = .{ .sizing = .{ .w = .fixed(ui.frame.hairline()), .h = .fixed(@floatFromInt(theme.font_size + 4)) } },
-        .floating = .{
-            // The font's own advance for the run before the caret, snapped to the device grid so the 1 px bar
-            // covers whole pixels instead of antialiasing into the glyph beside it.
-            .offset = .{ .x = ui.frame.snapX(columnX(text, at)), .y = 1 },
-            .attach_to = .to_parent,
-            .attach_points = .{ .element = .left_top, .parent = .left_top },
-            .z_index = 2,
-        },
-        // Hidden by going transparent, never by leaving it out: a missing box would reflow the line on every blink.
-        .background_color = if (editor.caretVisible(&self.ed)) theme.caret.toClay() else .{ 0, 0, 0, 0 },
-    })({});
+        .x = columnX(text, at),
+        .height = @floatFromInt(theme.font_size + 4),
+        .color = theme.caret,
+        .anchor = .top,
+        .y = 1,
+    });
 }
 
 fn noChildren(_: *App) void {}

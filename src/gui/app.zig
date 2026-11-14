@@ -194,9 +194,9 @@ pub const App = struct {
         self.filter_ed = text_editor.Editor.init(&self.filter_buf);
         self.palette_ed = text_editor.Editor.init(&self.palette_buf);
         // The live fields need a stable context each, so the click callback can find its model.
-        self.tree_search_ctx = .{ .input = &self.tree_search_ed, .id = "sidebar.search", .char_w = 7.8, .measure = measureRun, .on_focus = focusTreeSearch, .focus_ctx = self };
-        self.filter_ctx = .{ .input = &self.filter_ed, .id = "results.filter", .char_w = 6.6, .measure = measureRun, .on_focus = focusFilter, .focus_ctx = self };
-        self.palette_ctx = .{ .input = &self.palette_ed, .id = "palette.input", .char_w = 8.4, .measure = measureRun, .on_focus = focusPalette, .focus_ctx = self };
+        self.tree_search_ctx = .{ .input = &self.tree_search_ed, .id = "sidebar.search", .measure = measureRun, .on_focus = focusTreeSearch, .focus_ctx = self };
+        self.filter_ctx = .{ .input = &self.filter_ed, .id = "results.filter", .measure = measureRun, .on_focus = focusFilter, .focus_ctx = self };
+        self.palette_ctx = .{ .input = &self.palette_ed, .id = "palette.input", .measure = measureRun, .on_focus = focusPalette, .focus_ctx = self };
         // Same rule for the picker's own field buffer.
         self.picker.init();
         self.setStatus("no database open — Ctrl+O to choose one", .{});
