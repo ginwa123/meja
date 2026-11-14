@@ -609,7 +609,7 @@ test "composed text types Caps Lock, symbols and accents, and follows the focus"
     // The tree-search field is a different editor, so the routing has to follow the focus.
     h.app.focus = .tree_search;
     try testing.expect(h.driver.host.onTextEvent("A"));
-    try testing.expectEqualStrings("A", h.app.tree_search_ed.text());
+    try testing.expectEqualStrings("A", h.app.tree_search_ctx.editor.text());
     try testing.expectEqualStrings("SELECT * (\xc3\xa9", h.app.ed.text());
 
     // An empty run is not a keystroke: nothing to insert, nothing consumed.
@@ -634,11 +634,11 @@ test "dragging across a field selects the run under the pointer" {
     h.driver.move(bb.x + 8 + three, y);
     h.driver.releaseAt(bb.x + 8 + three, y);
 
-    const span = h.app.tree_search_ed.caret.selection() orelse return error.NoSelection;
+    const span = h.app.tree_search_ctx.editor.caret.selection() orelse return error.NoSelection;
     try testing.expect(span.start == 0);
     try testing.expectEqual(@as(usize, 3), span.end);
     // Selecting never edits the field.
-    try testing.expectEqualStrings("users", h.app.tree_search_ed.text());
+    try testing.expectEqualStrings("users", h.app.tree_search_ctx.editor.text());
 }
 
 test "clicking a line in the SQL editor puts the caret on that line" {
@@ -727,13 +727,13 @@ test "only the focused field draws a caret, so nothing blinks at you from anothe
     // The SQL editor owns the keyboard at startup: it has a caret, and the sidebar search field has none.
     try testing.expectEqual(app_mod.Focus.sql_editor, h.app.focus);
     try testing.expect(editor.caretVisible(&h.app.ed));
-    try testing.expect(!editor.caretVisible(&h.app.tree_search_ed));
+    try testing.expect(!editor.caretVisible(&h.app.tree_search_ctx.editor));
     try testing.expect(h.driver.box("editor.caret.0") != null);
 
     // Handing focus to the search field moves the one caret there; the editor reports none, so it draws none.
     h.app.focus = .tree_search;
     h.driver.frame();
-    try testing.expect(editor.caretVisible(&h.app.tree_search_ed));
+    try testing.expect(editor.caretVisible(&h.app.tree_search_ctx.editor));
     try testing.expect(fieldCaret("sidebar.search"));
     try testing.expect(!editor.caretVisible(&h.app.ed));
 
@@ -741,7 +741,7 @@ test "only the focused field draws a caret, so nothing blinks at you from anothe
     h.app.focus = .sql_editor;
     h.driver.frame();
     try testing.expect(editor.caretVisible(&h.app.ed));
-    try testing.expect(!editor.caretVisible(&h.app.tree_search_ed));
+    try testing.expect(!editor.caretVisible(&h.app.tree_search_ctx.editor));
 }
 
 // True when the live field with this id declared its caret this frame. The field floats it as IDI(id, 2).
@@ -945,9 +945,9 @@ test "an idle app renders the same frame twice (nothing in the list oscillates)"
     for (0..3) |i| {
         // Pin every caret clock, so the only thing that can differ is the list itself.
         h.app.ed.idle = 0;
-        h.app.tree_search_ed.idle = 0;
-        h.app.filter_ed.idle = 0;
-        h.app.palette_ed.idle = 0;
+        h.app.tree_search_ctx.editor.idle = 0;
+        h.app.filter_ctx.editor.idle = 0;
+        h.app.palette_ctx.editor.idle = 0;
         var opts: ui.frame.FrameOptions = .{ .probe = probeShape };
         shape_slot = &shapes[i];
         _ = h.driver.host.frameWithOptions(1200, 800, &opts);
@@ -1161,10 +1161,10 @@ test "double-clicking a word in a field selects it" {
     fake_now_ms = 1100;
     h.driver.clickAt(x, y);
 
-    const span = h.app.tree_search_ed.caret.selection() orelse return error.NoSelection;
+    const span = h.app.tree_search_ctx.editor.caret.selection() orelse return error.NoSelection;
     try testing.expectEqual(@as(usize, 0), span.start);
     try testing.expectEqual(@as(usize, 5), span.end);
-    try testing.expectEqualStrings("users", h.app.tree_search_ed.text());
+    try testing.expectEqualStrings("users", h.app.tree_search_ctx.editor.text());
 }
 
 // ---- Clipboard ----
@@ -1239,8 +1239,8 @@ test "Cmd+C on the tree search copies that field, not the SQL editor" {
     try h.typeText("SELECT 1");
     h.app.focus = .tree_search;
     _ = h.app.onText("users");
-    h.app.tree_search_ed.setCaret(5, false);
-    h.app.tree_search_ed.setCaret(0, true);
+    h.app.tree_search_ctx.editor.setCaret(5, false);
+    h.app.tree_search_ctx.editor.setCaret(0, true);
 
     try testing.expect(h.app.onKey(.{ .super = true }, editor.KEY_C));
     try testing.expectEqualStrings("users", fakeClipboardText());
@@ -1248,7 +1248,7 @@ test "Cmd+C on the tree search copies that field, not the SQL editor" {
     // Paste goes to the same field, and the SQL editor is untouched.
     _ = h.app.onKey(.{}, editor.KEY_END);
     try testing.expect(h.app.onKey(.{ .super = true }, editor.KEY_V));
-    try testing.expectEqualStrings("usersusers", h.app.tree_search_ed.text());
+    try testing.expectEqualStrings("usersusers", h.app.tree_search_ctx.editor.text());
     try testing.expectEqualStrings("usersusers", h.app.tree_search);
     try testing.expectEqualStrings("SELECT 1", h.app.ed.text());
 }

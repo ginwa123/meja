@@ -1,5 +1,6 @@
 const std = @import("std");
 const ui = @import("glinlandui");
+const props = ui.props;
 const box_mod = ui.components.box;
 const text_mod = ui.components.text;
 const button = ui.components.button;
@@ -26,19 +27,19 @@ pub fn pickerPane(self: *App) void {
         8;
 
     box_mod.box(.{
-        .id = "picker",
+        .id = .{ .text = "picker" },
         .w = .grow,
         .h = .{ .fixed = height },
         .direction = .column,
         .bg = theme.bg_header,
-        .pad = 8,
+        .pad = props.Pad.all(8),
         .gap = 6,
     }, self, pickerPaneChildren);
 }
 
 pub fn pickerPaneChildren(self: *App) void {
     box_mod.box(.{
-        .id = "picker.head",
+        .id = .{ .text = "picker.head" },
         .w = .grow,
         .h = .{ .fixed = 18 },
         .direction = .row,
@@ -46,7 +47,7 @@ pub fn pickerPaneChildren(self: *App) void {
     }, self, pickerHeadChildren);
 
     box_mod.box(.{
-        .id = "picker.bar",
+        .id = .{ .text = "picker.bar" },
         .w = .grow,
         .h = .{ .fixed = 30 },
         .direction = .row,
@@ -55,15 +56,13 @@ pub fn pickerPaneChildren(self: *App) void {
 
     if (self.picker.error_message) |err| {
         const shown = ui.frame.formatText("cannot read directory: {s}", .{err});
-        text_mod.label(.{ .str = shown, .font_size = theme.font_size_small, .color = theme.danger });
+        text_mod.label(.{ .label = .{ .text = shown, .size = theme.font_size_small, .color = theme.danger } });
         return;
     }
 
     if (self.picker.entries.items.len == 0) {
         text_mod.label(.{
-            .str = "no databases here — type a path above",
-            .font_size = theme.font_size_small,
-            .color = theme.text_faint,
+            .label = .{ .text = "no databases here — type a path above", .size = theme.font_size_small, .color = theme.text_faint },
         });
         return;
     }
@@ -73,52 +72,45 @@ pub fn pickerPaneChildren(self: *App) void {
 }
 
 pub fn pickerHeadChildren(self: *App) void {
-    text_mod.label(.{ .str = "Open database", .font_size = theme.font_size_small, .color = theme.text_bright });
-    text_mod.label(.{ .str = self.picker.dir(), .font_size = theme.font_size_small, .color = theme.text_dim });
+    text_mod.label(.{ .label = .{ .text = "Open database", .size = theme.font_size_small, .color = theme.text_bright } });
+    text_mod.label(.{ .label = .{ .text = self.picker.dir(), .size = theme.font_size_small, .color = theme.text_dim } });
 }
 
 pub fn pickerBarChildren(self: *App) void {
     input_mod.fieldEdit(.{
-        .id = "picker.path",
+        .id = .{ .text = "picker.path" },
         .font_size = theme.font_size,
         .fg = theme.text,
         .bg = theme.bg_editor,
         .sel_fg = theme.bg_selected,
-        .w = 520,
-        .h = 30,
-        .pad_tb = 4,
-        .pad_lr = 8,
+        .w = .{ .fixed = 520 },
+        .h = .{ .fixed = 30 },
+        .pad = props.Pad.axes(4, 8),
     }, self.picker.field.text(), .{
         .caret = @min(self.picker.field.caret.offset, self.picker.field.len),
         .anchor = self.picker.field.caret.anchor,
     });
 
     button.button(.{
-        .id = "picker.open",
-        .label = "Open",
-        .font_size = theme.font_size,
+        .id = .{ .text = "picker.open" },
+        .label = .{ .text = "Open", .size = theme.font_size },
         .bg = theme.bg_selected,
-        .pad_tb = 5,
-        .pad_lr = 14,
+        .pad = props.Pad.axes(5, 14),
         .on_click = onOpenButtonClick,
         .ctx = self,
     });
     button.button(.{
-        .id = "picker.browse",
-        .label = "Browse…",
-        .font_size = theme.font_size,
+        .id = .{ .text = "picker.browse" },
+        .label = .{ .text = "Browse…", .size = theme.font_size },
         .bg = theme.bg_header,
-        .pad_tb = 5,
-        .pad_lr = 14,
+        .pad = props.Pad.axes(5, 14),
         .on_click = onPickerBrowseClick,
         .ctx = self,
     });
     button.button(.{
-        .id = "picker.cancel",
-        .label = "Cancel",
-        .font_size = theme.font_size,
-        .pad_tb = 5,
-        .pad_lr = 14,
+        .id = .{ .text = "picker.cancel" },
+        .label = .{ .text = "Cancel", .size = theme.font_size },
+        .pad = props.Pad.axes(5, 14),
         .on_click = onCancelButtonClick,
         .ctx = self,
     });
@@ -136,14 +128,14 @@ pub fn pickerRow(app: *App, index: usize) void {
     const id = ui.frame.elementId("picker.row", index);
 
     box_mod.box(.{
-        .id = id,
+        .id = .{ .text = id },
         .w = .grow,
         .h = .{ .fixed = @floatFromInt(theme.row_height) },
         .direction = .row,
         .gap = 6,
-        .pad = 2,
+        .pad = props.Pad.all(2),
         .bg = if (selected) theme.bg_selected else theme.bg_header,
-        .radius = 3,
+        .radius = props.Radius.all(3),
     }, ctx, pickerRowChildren);
 
     registry.registerZCursor(ui.zclay.getElementId(id), onPickerRowClick, app, index, 0, .pointer);
@@ -157,14 +149,10 @@ pub fn pickerRowChildren(ctx: PickerRowCtx) void {
 
     // A trailing slash is the only marker a directory needs, and it is one the eye reads without a legend.
     text_mod.label(.{
-        .str = if (entry.is_dir) "/" else " ",
-        .font_size = theme.font_size_small,
-        .color = theme.text_faint,
+        .label = .{ .text = if (entry.is_dir) "/" else " ", .size = theme.font_size_small, .color = theme.text_faint },
     });
     text_mod.label(.{
-        .str = entry.name,
-        .font_size = theme.font_size_small,
-        .color = if (selected) theme.text_bright else theme.text,
+        .label = .{ .text = entry.name, .size = theme.font_size_small, .color = if (selected) theme.text_bright else theme.text },
     });
 }
 

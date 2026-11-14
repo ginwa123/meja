@@ -1,5 +1,6 @@
 const std = @import("std");
 const ui = @import("glinlandui");
+const props = ui.props;
 const box_mod = ui.components.box;
 const text_mod = ui.components.text;
 const button = ui.components.button;
@@ -20,33 +21,33 @@ const editor = ui.text_editor;
 pub fn gridBody(self: *App) void {
     if (!self.has_result) {
         box_mod.box(.{
-            .id = "grid.empty",
+            .id = .{ .text = "grid.empty" },
             .w = .grow,
             .h = .grow,
             .direction = .column,
-            .pad = 20,
+            .pad = props.Pad.all(20),
             .gap = 6,
         }, self, gridEmptyChildren);
         return;
     }
     if (self.result.columnCount() == 0) {
         box_mod.box(.{
-            .id = "grid.nocols",
+            .id = .{ .text = "grid.nocols" },
             .w = .grow,
             .h = .grow,
             .direction = .column,
-            .pad = 20,
+            .pad = props.Pad.all(20),
         }, self, gridNoColsChildren);
         return;
     }
 
     gridHeader(self);
     scroll_mod.scroll(.{
-        .id = "grid.scroll",
+        .id = .{ .text = "grid.scroll" },
         .direction = .both,
-        .w = .grow,
+        .w = .{ .clamp = .{ .min = 0, .max = viewportWidth(self), .grow = true } },
+
         .h = .grow,
-        .max_w = viewportWidth(self),
         .show_scrollbar = true,
     }, self, gridContent);
 
@@ -56,7 +57,7 @@ pub fn gridBody(self: *App) void {
 /// One fixed-width box holding every row.
 fn gridContent(self: *App) void {
     box_mod.box(.{
-        .id = "grid.content",
+        .id = .{ .text = "grid.content" },
         .w = .{ .fixed = totalWidth(self) },
         .h = .fit,
         .direction = .column,
@@ -83,7 +84,7 @@ pub fn totalWidth(self: *App) f32 {
 
 pub fn gridColumns(self: *App) void {
     box_mod.box(.{
-        .id = "grid.columns",
+        .id = .{ .text = "grid.columns" },
         .w = .{ .fixed = totalWidth(self) },
         .h = .grow,
         .direction = .column,
@@ -94,7 +95,7 @@ pub fn gridColumns(self: *App) void {
 pub fn gridColumnsChildren(self: *App) void {
     gridHeader(self);
     scroll_mod.scroll(.{
-        .id = "grid.scroll",
+        .id = .{ .text = "grid.scroll" },
         .direction = .vertical,
         .w = .{ .fixed = totalWidth(self) },
         .h = .grow,
@@ -118,39 +119,36 @@ pub fn maybeLoadMore(self: *App) void {
 
 pub fn gridEmptyChildren(self: *App) void {
     _ = self;
-    text_mod.label(.{ .str = "Nothing to show yet", .font_size = theme.font_size, .color = theme.text_dim });
+    text_mod.label(.{ .label = .{ .text = "Nothing to show yet", .size = theme.font_size, .color = theme.text_dim } });
     text_mod.label(.{
-        .str = "Pick a table from the tree, or write a query and press Ctrl+Enter.",
-        .font_size = theme.font_size_tiny,
-        .color = theme.text_faint,
+        .label = .{ .text = "Pick a table from the tree, or write a query and press Ctrl+Enter.", .size = theme.font_size_tiny, .color = theme.text_faint },
     });
 }
 
 pub fn gridNoColsChildren(self: *App) void {
-    text_mod.label(.{ .str = self.status, .font_size = theme.font_size_small, .color = theme.text_dim });
+    text_mod.label(.{ .label = .{ .text = self.status, .size = theme.font_size_small, .color = theme.text_dim } });
 }
 
 pub fn gridHeader(self: *App) void {
     box_mod.box(.{
-        .id = "grid.header",
-        .w = .grow,
+        .id = .{ .text = "grid.header" },
+        .w = .{ .clamp = .{ .min = 0, .max = viewportWidth(self), .grow = true } },
+
         .h = .{ .fixed = @floatFromInt(theme.row_height) },
-        .max_w = viewportWidth(self),
         .direction = .row,
         .bg = theme.bg_header,
         .gap = 0,
-        .border_width = 1,
-        .border_color = theme.line,
+        .border = .{ .width = 1, .color = theme.line },
     }, self, gridHeaderChildren);
 }
 
 pub fn gridHeaderChildren(self: *App) void {
     box_mod.box(.{
-        .id = "grid.header.num",
+        .id = .{ .text = "grid.header.num" },
         .w = .{ .fixed = theme.rownum_w },
         .h = .grow,
         .direction = .row,
-        .pad = 4,
+        .pad = props.Pad.all(4),
     }, self, headerNumChildren);
 
     // The header is outside the scroll container, so it follows the body's horizontal offset by hand.
@@ -175,7 +173,7 @@ pub fn gridHeaderChildren(self: *App) void {
 
 pub fn headerNumChildren(self: *App) void {
     _ = self;
-    text_mod.label(.{ .str = "#", .font_size = theme.font_size_tiny, .color = theme.text_ghost });
+    text_mod.label(.{ .label = .{ .text = "#", .size = theme.font_size_tiny, .color = theme.text_ghost } });
 }
 
 /// Context for one header cell: which column.
@@ -186,11 +184,11 @@ pub fn headerCell(self: *App, c: usize) void {
     const id = ui.frame.elementId("grid.head", c);
 
     box_mod.box(.{
-        .id = id,
+        .id = .{ .text = id },
         .w = .{ .fixed = @floatFromInt(width) },
         .h = .grow,
         .direction = .row,
-        .pad = 4,
+        .pad = props.Pad.all(4),
         .gap = 6,
     }, HeaderCtx{ .app = self, .col = c }, headerCellChildren);
 
@@ -203,7 +201,7 @@ pub fn headerCellChildren(ctx: HeaderCtx) void {
     if (c >= self.result.columns.len) return;
     const col = self.result.columns[c];
 
-    text_mod.label(.{ .str = col.name, .font_size = theme.font_size_small, .color = theme.text_bright });
+    text_mod.label(.{ .label = .{ .text = col.name, .size = theme.font_size_small, .color = theme.text_bright } });
 
     const type_name = switch (col.storage_class) {
         .integer => "INT",
@@ -215,21 +213,16 @@ pub fn headerCellChildren(ctx: HeaderCtx) void {
     };
     const badge_id = ui.frame.elementId("grid.head.badge", c);
     badge_mod.badge(.{
-        .id = badge_id,
-        .label = type_name,
+        .id = .{ .text = badge_id },
+        .label = .{ .text = type_name, .size = 9, .color = theme.text_ghost },
         .bg = theme.bg_editor,
-        .fg = theme.text_ghost,
-        .font_size = 9,
-        .pad_tb = 0,
-        .pad_lr = 4,
+        .pad = props.Pad.axes(0, 4),
     });
 
     if (self.sort_col) |sc| {
         if (sc == c and self.sort_dir != 0) {
             text_mod.label(.{
-                .str = if (self.sort_dir > 0) "ASC" else "DESC",
-                .font_size = 9,
-                .color = theme.accent,
+                .label = .{ .text = if (self.sort_dir > 0) "ASC" else "DESC", .size = 9, .color = theme.accent },
             });
         }
     }
@@ -264,7 +257,7 @@ pub fn gridRows(self: *App) void {
 /// A transparent box of a fixed height, used to stand in for rows that are scrolled out of view.
 pub fn padBox(self: *App, id: []const u8, height: f32) void {
     box_mod.box(.{
-        .id = id,
+        .id = .{ .text = id },
         .w = .grow,
         .h = .{ .fixed = height },
         .direction = .row,
@@ -278,7 +271,7 @@ pub fn gridRow(self: *App, display_index: usize) void {
     const id = ui.frame.elementId("grid.row", display_index);
 
     box_mod.box(.{
-        .id = id,
+        .id = .{ .text = id },
         .w = .{ .fixed = totalWidth(self) },
         .h = .{ .fixed = @floatFromInt(theme.row_height) },
         .direction = .row,
@@ -295,11 +288,11 @@ pub fn gridRowChildren(ctx: RowCtx) void {
 
     // Row number: the display position, so a filtered view still counts 1..n.
     box_mod.box(.{
-        .id = ui.frame.elementId("grid.num", ctx.display),
+        .id = .{ .text = ui.frame.elementId("grid.num", ctx.display) },
         .w = .{ .fixed = theme.rownum_w },
         .h = .grow,
         .direction = .row,
-        .pad = 4,
+        .pad = props.Pad.all(4),
     }, ctx, rowNumChildren);
 
     var c: usize = 0;
@@ -311,7 +304,7 @@ pub fn gridRowChildren(ctx: RowCtx) void {
 
 pub fn rowNumChildren(ctx: RowCtx) void {
     const shown = ui.frame.formatText("{d}", .{ctx.display + 1});
-    text_mod.label(.{ .str = shown, .font_size = theme.font_size_tiny, .color = theme.text_ghost });
+    text_mod.label(.{ .label = .{ .text = shown, .size = theme.font_size_tiny, .color = theme.text_ghost } });
 }
 
 /// Context for one grid cell: which row on the page, which column.
@@ -321,11 +314,11 @@ pub fn cell(self: *App, display_index: usize, c: usize) void {
     const width = if (c < self.col_widths.items.len) self.col_widths.items[c] else 120;
 
     box_mod.box(.{
-        .id = ui.frame.elementId2("grid.cell", display_index, c),
+        .id = .{ .text = ui.frame.elementId2("grid.cell", display_index, c) },
         .w = .{ .fixed = @floatFromInt(width) },
         .h = .grow,
         .direction = .row,
-        .pad = 4,
+        .pad = props.Pad.all(4),
     }, CellCtx{ .app = self, .display = display_index, .col = c }, cellChildren);
 }
 
@@ -343,20 +336,18 @@ pub fn cellChildren(ctx: CellCtx) void {
     const shown = if (is_null) "NULL" else value_mod.render(buf, v);
 
     text_mod.label(.{
-        .str = shown,
-        .font_size = theme.font_size_small,
-        .color = if (is_null) theme.text_null_value else theme.text,
+        .label = .{ .text = shown, .size = theme.font_size_small, .color = if (is_null) theme.text_null_value else theme.text },
     });
 }
 
 pub fn gridFooter(self: *App) void {
     box_mod.box(.{
-        .id = "pager",
+        .id = .{ .text = "pager" },
         .w = .grow,
         .h = .{ .fixed = 28 },
         .direction = .row,
         .bg = theme.bg_panel,
-        .pad = 6,
+        .pad = props.Pad.all(6),
         .gap = 8,
     }, self, gridFooterChildren);
 }
@@ -364,21 +355,17 @@ pub fn gridFooter(self: *App) void {
 pub fn gridFooterChildren(self: *App) void {
     const total = self.row_order.items.len;
     const shown = ui.frame.formatText("{d} rows loaded", .{total});
-    text_mod.label(.{ .str = shown, .font_size = theme.font_size_tiny, .color = theme.text_dim });
+    text_mod.label(.{ .label = .{ .text = shown, .size = theme.font_size_tiny, .color = theme.text_dim } });
 
-    box_mod.spacer("pager.spacer");
+    box_mod.spacer(.{ .text = "pager.spacer" });
 
     if (self.has_result and self.result.truncated) {
         text_mod.label(.{
-            .str = "scroll for more",
-            .font_size = theme.font_size_tiny,
-            .color = theme.text_faint,
+            .label = .{ .text = "scroll for more", .size = theme.font_size_tiny, .color = theme.text_faint },
         });
     } else if (self.has_result) {
         text_mod.label(.{
-            .str = "end of result",
-            .font_size = theme.font_size_tiny,
-            .color = theme.text_ghost,
+            .label = .{ .text = "end of result", .size = theme.font_size_tiny, .color = theme.text_ghost },
         });
     }
 }

@@ -54,7 +54,7 @@ pub fn root(ctx: ?*anyopaque, w: u32, h: u32) void {
     self.rebuildTabViews();
 
     box_mod.box(.{
-        .id = "root",
+        .id = .{ .text = "root" },
         .w = .grow,
         .h = .grow,
         .direction = .column,
@@ -77,7 +77,7 @@ fn rootChildren(self: *App) void {
 
 fn mainRow(self: *App) void {
     box_mod.box(.{
-        .id = "main",
+        .id = .{ .text = "main" },
         .w = .grow,
         .h = .grow,
         .direction = .row,

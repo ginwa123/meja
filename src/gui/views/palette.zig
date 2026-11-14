@@ -1,5 +1,6 @@
 const std = @import("std");
 const ui = @import("glinlandui");
+const props = ui.props;
 const box_mod = ui.components.box;
 const text_mod = ui.components.text;
 const button = ui.components.button;
@@ -18,35 +19,33 @@ const editor = ui.text_editor;
 
 pub fn paletteBand(self: *App) void {
     box_mod.box(.{
-        .id = "palette",
+        .id = .{ .text = "palette" },
         .w = .grow,
         .h = .{ .fixed = 200 },
         .direction = .column,
         .bg = theme.bg_panel,
-        .pad = 10,
+        .pad = props.Pad.all(10),
         .gap = 6,
     }, self, paletteBandChildren);
 }
 
 pub fn paletteBandChildren(self: *App) void {
     input_mod.liveField(.{
-        .id = "palette.input",
+        .id = .{ .text = "palette.input" },
         .font_size = theme.font_size,
         .fg = theme.text_bright,
         .bg = theme.bg_editor,
         .sel_fg = theme.text_bright,
         .sel_bg = theme.bg_selected,
         .caret_fg = theme.caret,
-        .h = 30,
-        .pad_tb = 5,
-        .pad_lr = 10,
-        .border_width = 1,
-        .border_color = theme.line,
+        .h = .{ .fixed = 30 },
+        .pad = props.Pad.axes(5, 10),
+        .border = .{ .width = 1, .color = theme.line },
     }, &self.palette_ctx);
 
     const matches = self.paletteMatchCount();
     if (matches == 0) {
-        text_mod.label(.{ .str = "no match", .font_size = theme.font_size_small, .color = theme.text_faint });
+        text_mod.label(.{ .label = .{ .text = "no match", .size = theme.font_size_small, .color = theme.text_faint } });
         return;
     }
 
@@ -65,13 +64,13 @@ pub fn paletteRow(self: *App, i: usize) void {
     const selected = self.palette_idx == i;
 
     box_mod.box(.{
-        .id = id,
+        .id = .{ .text = id },
         .w = .grow,
         .h = .{ .fixed = 24 },
         .direction = .row,
         .bg = if (selected) theme.bg_selected else theme.bg_panel,
-        .radius = 4,
-        .pad = 4,
+        .radius = props.Radius.all(4),
+        .pad = props.Pad.all(4),
         .gap = 8,
     }, PaletteCtx{ .app = self, .table_index = table_index }, paletteRowChildren);
 
@@ -82,9 +81,7 @@ pub fn paletteRowChildren(ctx: PaletteCtx) void {
     const self = ctx.app;
     if (ctx.table_index >= self.tables.items.len) return;
     text_mod.label(.{
-        .str = self.tables.items[ctx.table_index].name,
-        .font_size = theme.font_size_small,
-        .color = theme.text,
+        .label = .{ .text = self.tables.items[ctx.table_index].name, .size = theme.font_size_small, .color = theme.text },
     });
 }
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const ui = @import("glinlandui");
+const props = ui.props;
 const box_mod = ui.components.box;
 const text_mod = ui.components.text;
 const button = ui.components.button;
@@ -26,7 +27,7 @@ pub fn editorPane(self: *App) void {
     const cap = @as(f32, @floatFromInt(self.window_h)) * 0.45;
 
     box_mod.box(.{
-        .id = "editor",
+        .id = .{ .text = "editor" },
         .w = .grow,
         .h = .{ .fixed = @min(wanted, cap) },
         .direction = .column,
@@ -42,29 +43,27 @@ pub fn editorPaneChildren(self: *App) void {
 
 pub fn editorBar(self: *App) void {
     box_mod.box(.{
-        .id = "editor.bar",
+        .id = .{ .text = "editor.bar" },
         .w = .grow,
         .h = .{ .fixed = theme.bar_h },
         .direction = .row,
         .bg = theme.bg_editor,
-        .pad = 6,
+        .pad = props.Pad.all(6),
         .gap = 8,
     }, self, editorBarChildren);
 }
 
 pub fn editorBarChildren(self: *App) void {
-    text_mod.label(.{ .str = "QUERY", .font_size = theme.font_size_tiny, .color = theme.text_faint });
-    text_mod.label(.{ .str = "Ctrl+Enter to run", .font_size = theme.font_size_tiny, .color = theme.text_ghost });
-    box_mod.spacer("editor.bar.spacer");
+    text_mod.label(.{ .label = .{ .text = "QUERY", .size = theme.font_size_tiny, .color = theme.text_faint } });
+    text_mod.label(.{ .label = .{ .text = "Ctrl+Enter to run", .size = theme.font_size_tiny, .color = theme.text_ghost } });
+    box_mod.spacer(.{ .text = "editor.bar.spacer" });
     button.button(.{
-        .id = "editor.run",
-        .label = "Run",
-        .font_size = theme.font_size_tiny,
+        .id = .{ .text = "editor.run" },
+        .label = .{ .text = "Run", .size = theme.font_size_tiny },
         .bg = theme.bg_primary,
         .fg = theme.text_bright,
         .hover_bg = theme.bg_primary_hover,
-        .pad_tb = 3,
-        .pad_lr = 12,
+        .pad = props.Pad.axes(3, 12),
         .on_click = onRunClick,
         .ctx = self,
     });
@@ -74,12 +73,12 @@ pub fn editorBody(self: *App) void {
     // The editor owns its caret clock, the same way a single-line field does: it advances only while the editor has focus.
     self.ed.tickBlink(ui.frame.delta_s);
     box_mod.box(.{
-        .id = "editor.body",
+        .id = .{ .text = "editor.body" },
         .w = .grow,
         .h = .grow,
         .direction = .column,
         .bg = theme.bg_editor,
-        .pad = 6,
+        .pad = props.Pad.all(6),
         .gap = 0,
     }, self, editorBodyChildren);
 }
@@ -90,7 +89,7 @@ pub fn editorBodyChildren(self: *App) void {
         const id = ui.frame.elementId("editor.line", line);
         self.line_clicks[line] = .{ .app = self, .line = line };
         box_mod.box(.{
-            .id = id,
+            .id = .{ .text = id },
             .w = .grow,
             .h = .{ .fixed = theme.row_height },
             .direction = .row,
@@ -157,24 +156,22 @@ pub fn editorLine(self: *App, line: usize, has_caret: bool) void {
         if (a < b) {
             const s0 = a - start;
             const s1 = b - start;
-            if (s0 > 0) text_mod.label(.{ .str = text[0..s0], .font_size = theme.font_size, .color = theme.text });
+            if (s0 > 0) text_mod.label(.{ .label = .{ .text = text[0..s0], .size = theme.font_size, .color = theme.text } });
             box_mod.box(.{
-                .id = ui.frame.elementId("editor.sel", line),
+                .id = .{ .text = ui.frame.elementId("editor.sel", line) },
                 .w = .fit,
                 .h = .grow,
                 .direction = .row,
                 .bg = theme.bg_selected,
             }, self, noChildren);
-            text_mod.label(.{ .str = text[s0..s1], .font_size = theme.font_size, .color = theme.text_bright });
-            if (s1 < text.len) text_mod.label(.{ .str = text[s1..], .font_size = theme.font_size, .color = theme.text });
+            text_mod.label(.{ .label = .{ .text = text[s0..s1], .size = theme.font_size, .color = theme.text_bright } });
+            if (s1 < text.len) text_mod.label(.{ .label = .{ .text = text[s1..], .size = theme.font_size, .color = theme.text } });
             return;
         }
     }
 
     text_mod.label(.{
-        .str = text,
-        .font_size = theme.font_size,
-        .color = theme.text,
+        .label = .{ .text = text, .size = theme.font_size, .color = theme.text },
     });
     if (caret_at) |at| caretBar(self, line, at, text);
 }

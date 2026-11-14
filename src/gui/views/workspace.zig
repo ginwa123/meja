@@ -1,5 +1,6 @@
 const std = @import("std");
 const ui = @import("glinlandui");
+const props = ui.props;
 const box_mod = ui.components.box;
 const text_mod = ui.components.text;
 const button = ui.components.button;
@@ -20,7 +21,7 @@ const grid_view = @import("../components/grid.zig");
 
 pub fn work(self: *App) void {
     box_mod.box(.{
-        .id = "work",
+        .id = .{ .text = "work" },
         .w = .grow,
         .h = .grow,
         .direction = .column,
@@ -37,18 +38,18 @@ pub fn workChildren(self: *App) void {
 pub fn tabBar(self: *App) void {
     if (self.tabs.items.len == 0) {
         box_mod.box(.{
-            .id = "tabs.empty",
+            .id = .{ .text = "tabs.empty" },
             .w = .grow,
             .h = .{ .fixed = theme.tabs_h },
             .direction = .row,
             .bg = theme.bg_panel,
-            .pad = 8,
+            .pad = props.Pad.all(8),
         }, self, tabsEmptyChildren);
         return;
     }
 
     tabs_mod.tabs(.{
-        .id = "tabs",
+        .id = .{ .text = "tabs" },
         .tabs = self.tab_views.items,
         .h = @intFromFloat(theme.tabs_h),
         .bg = theme.bg_tab,
@@ -65,9 +66,7 @@ pub fn tabBar(self: *App) void {
 pub fn tabsEmptyChildren(self: *App) void {
     _ = self;
     text_mod.label(.{
-        .str = "no tabs — pick a table from the tree",
-        .font_size = theme.font_size_tiny,
-        .color = theme.text_faint,
+        .label = .{ .text = "no tabs — pick a table from the tree", .size = theme.font_size_tiny, .color = theme.text_faint },
     });
 }
 
@@ -75,7 +74,7 @@ pub fn tabsEmptyChildren(self: *App) void {
 
 pub fn resultsPane(self: *App) void {
     box_mod.box(.{
-        .id = "results",
+        .id = .{ .text = "results" },
         .w = .grow,
         .h = .grow,
         .direction = .column,
@@ -92,57 +91,55 @@ pub fn resultsPaneChildren(self: *App) void {
 
 pub fn resultsBar(self: *App) void {
     box_mod.box(.{
-        .id = "results.bar",
+        .id = .{ .text = "results.bar" },
         .w = .grow,
         .h = .{ .fixed = theme.bar_h },
         .direction = .row,
         .bg = theme.bg_panel,
-        .pad = 6,
+        .pad = props.Pad.all(6),
         .gap = 10,
     }, self, resultsBarChildren);
 }
 
 pub fn resultsBarChildren(self: *App) void {
     resultsStats(self);
-    box_mod.spacer("results.bar.spacer");
+    box_mod.spacer(.{ .text = "results.bar.spacer" });
     filterField(self);
 }
 
 pub fn resultsStats(self: *App) void {
     if (!self.has_result) {
-        text_mod.label(.{ .str = "no results", .font_size = theme.font_size_tiny, .color = theme.text_faint });
+        text_mod.label(.{ .label = .{ .text = "no results", .size = theme.font_size_tiny, .color = theme.text_faint } });
         return;
     }
     const shown = ui.frame.formatText("{d} rows x {d} cols", .{
         self.row_order.items.len,
         self.result.columnCount(),
     });
-    text_mod.label(.{ .str = shown, .font_size = theme.font_size_tiny, .color = theme.text_dim });
+    text_mod.label(.{ .label = .{ .text = shown, .size = theme.font_size_tiny, .color = theme.text_dim } });
 
     const ms_text = ui.frame.formatText("{d} ms", .{
         self.result.elapsed_ns / 1_000_000,
     });
-    text_mod.label(.{ .str = ms_text, .font_size = theme.font_size_tiny, .color = theme.text_faint });
+    text_mod.label(.{ .label = .{ .text = ms_text, .size = theme.font_size_tiny, .color = theme.text_faint } });
     if (self.filter.len > 0) {
-        text_mod.label(.{ .str = "filtered", .font_size = theme.font_size_tiny, .color = theme.warn });
+        text_mod.label(.{ .label = .{ .text = "filtered", .size = theme.font_size_tiny, .color = theme.warn } });
     }
 }
 
 pub fn filterField(self: *App) void {
     input_mod.liveField(.{
-        .id = "results.filter",
+        .id = .{ .text = "results.filter" },
         .font_size = theme.font_size_tiny,
         .fg = theme.text,
         .bg = theme.bg_editor,
         .sel_fg = theme.text_bright,
         .sel_bg = theme.bg_selected,
         .caret_fg = theme.caret,
-        .w = 180,
-        .h = 22,
-        .pad_tb = 2,
-        .pad_lr = 8,
-        .border_width = 1,
-        .border_color = theme.line,
+        .w = .{ .fixed = 180 },
+        .h = .{ .fixed = 22 },
+        .pad = props.Pad.axes(2, 8),
+        .border = .{ .width = 1, .color = theme.line },
     }, &self.filter_ctx);
 }
 

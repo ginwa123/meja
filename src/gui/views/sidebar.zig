@@ -1,5 +1,6 @@
 const std = @import("std");
 const ui = @import("glinlandui");
+const props = ui.props;
 const box_mod = ui.components.box;
 const text_mod = ui.components.text;
 const button = ui.components.button;
@@ -18,12 +19,12 @@ const editor = ui.text_editor;
 
 pub fn sidebar(self: *App) void {
     box_mod.box(.{
-        .id = "sidebar",
+        .id = .{ .text = "sidebar" },
         .w = .{ .fixed = theme.sidebar_width },
         .h = .grow,
         .direction = .column,
         .bg = theme.bg_panel,
-        .pad = 8,
+        .pad = props.Pad.all(8),
         .gap = 6,
     }, self, sidebarChildren);
 }
@@ -32,7 +33,7 @@ pub fn sidebarChildren(self: *App) void {
     treeSearchField(self);
 
     scroll_mod.scroll(.{
-        .id = "sidebar.scroll",
+        .id = .{ .text = "sidebar.scroll" },
         .direction = .vertical,
         .w = .grow,
         .h = .grow,
@@ -44,24 +45,22 @@ pub fn sidebarChildren(self: *App) void {
 
 pub fn treeSearchField(self: *App) void {
     input_mod.liveField(.{
-        .id = "sidebar.search",
+        .id = .{ .text = "sidebar.search" },
         .font_size = theme.font_size_small,
         .fg = theme.text,
         .bg = theme.bg_editor,
         .sel_fg = theme.text_bright,
         .sel_bg = theme.bg_selected,
         .caret_fg = theme.caret,
-        .h = 28,
-        .pad_tb = 4,
-        .pad_lr = 8,
-        .border_width = 1,
-        .border_color = theme.line,
+        .h = .{ .fixed = 28 },
+        .pad = props.Pad.axes(4, 8),
+        .border = .{ .width = 1, .color = theme.line },
     }, &self.tree_search_ctx);
 }
 
 pub fn sidebarTree(self: *App) void {
     tree_mod.tree(.{
-        .id = "sidebar.tree",
+        .id = .{ .text = "sidebar.tree" },
         .rows = self.tree_rows.items,
         .row_h = theme.tree_row_height,
         .indent = 13,
@@ -81,7 +80,7 @@ pub fn sidebarTree(self: *App) void {
 
 pub fn sidebarFooter(self: *App) void {
     box_mod.box(.{
-        .id = "sidebar.foot",
+        .id = .{ .text = "sidebar.foot" },
         .w = .grow,
         .h = .{ .fixed = 28 },
         .direction = .row,
@@ -91,38 +90,32 @@ pub fn sidebarFooter(self: *App) void {
 
 pub fn sidebarFooterChildren(self: *App) void {
     button.button(.{
-        .id = "sidebar.open",
-        .label = "Connect…",
-        .font_size = theme.font_size_tiny,
+        .id = .{ .text = "sidebar.open" },
+        .label = .{ .text = "Connect…", .size = theme.font_size_tiny },
         .bg = theme.bg_header,
         .fg = theme.text_dim,
         .hover_bg = theme.bg_hover,
-        .pad_tb = 3,
-        .pad_lr = 8,
+        .pad = props.Pad.axes(3, 8),
         .on_click = onSidebarOpenClick,
         .ctx = self,
     });
     button.button(.{
-        .id = "sidebar.browse",
-        .label = "Browse…",
-        .font_size = theme.font_size_tiny,
+        .id = .{ .text = "sidebar.browse" },
+        .label = .{ .text = "Browse…", .size = theme.font_size_tiny },
         .bg = theme.bg_header,
         .fg = theme.text_dim,
         .hover_bg = theme.bg_hover,
-        .pad_tb = 3,
-        .pad_lr = 8,
+        .pad = props.Pad.axes(3, 8),
         .on_click = onSidebarBrowseClick,
         .ctx = self,
     });
     button.button(.{
-        .id = "sidebar.newquery",
-        .label = "New query",
-        .font_size = theme.font_size_tiny,
+        .id = .{ .text = "sidebar.newquery" },
+        .label = .{ .text = "New query", .size = theme.font_size_tiny },
         .bg = theme.bg_header,
         .fg = theme.text_dim,
         .hover_bg = theme.bg_hover,
-        .pad_tb = 3,
-        .pad_lr = 8,
+        .pad = props.Pad.axes(3, 8),
         .on_click = onNewQueryClick,
         .ctx = self,
     });

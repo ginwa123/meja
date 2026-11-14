@@ -119,14 +119,14 @@ pub fn main(init: std.process.Init) !void {
     var failures: usize = 0;
     failures += try check(w, &driver, .{
         .tag = "FIELD  sidebar.search",
-        .id = "sidebar.search",
+        .id = .{ .text = "sidebar.search" },
         .caret_id = ui.zclay.ElementId.IDI("sidebar.search", 2),
         .editor = &app.tree_search_ed,
         .focus = .tree_search,
     });
     failures += try check(w, &driver, .{
         .tag = "EDITOR line 0",
-        .id = "editor.line.0",
+        .id = .{ .text = "editor.line.0" },
         .caret_id = ui.zclay.ElementId.IDI("editor.caret.0", 0),
         .editor = &app.ed,
         .focus = .sql_editor,
